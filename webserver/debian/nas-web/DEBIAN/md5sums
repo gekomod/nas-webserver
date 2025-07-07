@@ -1,0 +1,4 @@
+78dc08fd50c04fa38952a145c044be39  lib/systemd/system/nas-web.service
+025fd1f3367a355d99974cf42a3d3df4  usr/local/bin/nas-web
+3e5634fdc8a638d904ca15a842bb83d6  usr/share/doc/nas-web/changelog.Debian.gz
+b9be051e977cd1a648791e3ddb823556  usr/share/doc/nas-web/copyright

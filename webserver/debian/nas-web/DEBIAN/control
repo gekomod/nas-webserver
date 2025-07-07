@@ -1,0 +1,11 @@
+Package: nas-web
+Version: 1.2.0-1
+Architecture: amd64
+Maintainer: Your Name <your.email@example.com>
+Installed-Size: 47
+Depends: libc6 (>= 2.34)
+Section: web
+Priority: optional
+Description: Lightweight web server for Vue.js applications
+ NAS-WEB is a custom web server designed to serve Vue.js applications
+ with integrated backend API support.

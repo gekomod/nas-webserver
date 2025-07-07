@@ -1,0 +1,14 @@
+[Unit]
+Description=NAS-WEB Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/nas-web
+Restart=always
+StandardOutput=file:/var/log/nas-web/output.log
+StandardError=file:/var/log/nas-web/error.log
+
+[Install]
+WantedBy=multi-user.target
