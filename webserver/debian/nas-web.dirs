@@ -1,0 +1,4 @@
+etc/nas-web
+usr/local/bin
+var/log/nas-web
+lib/systemd/system

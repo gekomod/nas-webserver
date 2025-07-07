@@ -1,0 +1,9 @@
+#!/bin/bash
+
+rm -fr /etc/nas-web
+
+# Stop service before removal
+systemctl stop nas-web.service
+systemctl disable nas-web.service
+
+exit 0

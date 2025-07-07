@@ -1,0 +1,25 @@
+nas-web (1.2.0-1) unstable; urgency=medium
+
+  * [Nowa funkcja] Dodano pełną obsługę WebAssembly (WASM)
+  * [Poprawka] Naprawiono problem z odświeżaniem stron SPA
+  * [Optymalizacja] Zmniejszono zużycie pamięci serwera
+  * [Bezpieczeństwo] Zaktualizowano zależności OpenSSL
+  * [Infra] Dodano pliki konfiguracyjne systemd
+
+ -- Jan Kowalski <jan.kowalski@example.com>  Fri, 14 Jul 2023 16:30:00 +0200
+
+nas-web (1.1.0-2) unstable; urgency=low
+
+  * [Poprawka] Naprawiono błąd kompresji plików statycznych
+  * [Dokumentacja] Zaktualizowano pliki README
+  * [Infra] Dostosowano konfigurację dla Debian 11
+
+ -- Jan Kowalski <jan.kowalski@example.com>  Wed, 5 Jul 2023 10:15:00 +0200
+
+nas-web (1.0.0-1) unstable; urgency=low
+
+  * Pierwsze wydanie pakietu Debian
+  * Dodano podstawową funkcjonalność serwera
+  * Obsługa frontendu Vue.js i backendu API
+
+ -- Jan Kowalski <jan.kowalski@example.com>  Mon, 3 Jul 2023 09:00:00 +0200
