@@ -1,0 +1,4 @@
+# ignore all c files
+*.o
+dist/
+debian/nas-web
