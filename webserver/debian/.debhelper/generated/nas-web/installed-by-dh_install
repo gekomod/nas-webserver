@@ -1,3 +1,0 @@
-./dist/nas-web
-./debian/nas-web.service
-./debian/config/nas-web.conf
