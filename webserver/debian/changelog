@@ -1,3 +1,17 @@
+nas-web (1.2.2) UNRELEASED; urgency=medium
+
+  * Add SSL, Gzip, Error Page, Profiler
+  * Fix Bug
+  * Add New Options in config files
+
+ -- root <root@zaba-iMac>  Sun, 20 Jul 2025 21:51:18 +0200
+
+nas-web (1.2.1) unstable; urgency=medium
+
+  * fix config with port 80 is use
+
+ -- Gekomod <zaba141@o2.pl>  Fri, 19 Jul 2025 18:40:00 +0200
+
 nas-web (1.2.0-1) unstable; urgency=medium
 
   * [Nowa funkcja] Dodano pełną obsługę WebAssembly (WASM)

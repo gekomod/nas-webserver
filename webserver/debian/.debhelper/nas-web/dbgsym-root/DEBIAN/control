@@ -1,13 +1,13 @@
 Package: nas-web-dbgsym
 Package-Type: ddeb
 Source: nas-web
-Version: 1.2.0-1
+Version: 1.2.1
 Auto-Built-Package: debug-symbols
 Architecture: amd64
 Maintainer: Your Name <your.email@example.com>
-Installed-Size: 23
-Depends: nas-web (= 1.2.0-1)
+Installed-Size: 29
+Depends: nas-web (= 1.2.1)
 Section: debug
 Priority: optional
 Description: debug symbols for nas-web
-Build-Ids: f2ff7633aa777817d3cc387f0553262f49f50e9c
+Build-Ids: 5d0ab1f0d56e445b21f26fb6c295fa82006df66b

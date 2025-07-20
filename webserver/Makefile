@@ -1,26 +1,17 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -pedantic -std=c11 -g
-LDFLAGS = -lcrypto -lssl
-SRC = src/main.c src/config.c src/router.c
+CC = cc
+CFLAGS = -Wall -Wextra -pedantic -std=c11 -g -DENABLE_PROFILING -D_POSIX_C_SOURCE=199309L
+LDFLAGS = -lcrypto -lssl -lz
+SRC = src/main.c src/config.c src/router.c src/error.c src/profiler.c
 OBJ = $(SRC:.c=.o)
-TARGET = dist/nas-web  # Zmieniona ścieżka docelowa
+TARGET = dist/nas-web
 
-all: create_dist $(TARGET)
-
-create_dist:
-	mkdir -p dist
+all: $(TARGET)
 
 $(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(OBJ) -o $(TARGET) $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -f $(OBJ) $(TARGET)
-	rmdir dist 2>/dev/null || true
-
-install: all
-	cp $(TARGET) /usr/local/bin/nas-web
-
-.PHONY: all clean create_dist install
