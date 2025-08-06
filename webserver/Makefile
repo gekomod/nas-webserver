@@ -1,6 +1,6 @@
 CC = cc
-CFLAGS = -Wall -Wextra -pedantic -std=c11 -g -DENABLE_PROFILING -D_POSIX_C_SOURCE=199309L
-LDFLAGS = -lcrypto -lssl -lz
+CFLAGS = -Wall -Wextra -Wno-unused-parameter -O2 -pedantic -std=c11 -g -DENABLE_PROFILING -D_POSIX_C_SOURCE=199309L
+LDFLAGS = -lcrypto -lssl -lz -lnghttp2 -lpthread
 SRC = src/main.c src/config.c src/router.c src/error.c src/profiler.c
 OBJ = $(SRC:.c=.o)
 TARGET = dist/nas-web

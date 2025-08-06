@@ -474,6 +474,9 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
             "Access-Control-Allow-Origin: *\r\n"
             "Cross-Origin-Opener-Policy: same-origin\r\n"
             "Cross-Origin-Embedder-Policy: require-corp\r\n"
+            "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            "Pragma: no-cache\r\n"
+            "Expires: 0\r\n"
             "Connection: close\r\n"
             "\r\n",
             response->status_code,

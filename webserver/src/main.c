@@ -11,6 +11,7 @@
 #include "router.h"
 #include "error.h"
 #include "profiler.h"
+#include "http2.c"
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -38,6 +39,61 @@ void configure_context(SSL_CTX* ctx, const char* cert_path, const char* key_path
     if (SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
+    }
+}
+
+void handle_http2_connection(int socket, SSL *ssl, const Config *config) {
+    HTTP2Connection *conn = http2_init_connection(socket, ssl, config);
+    if (!conn) {
+        close(socket);
+        return;
+    }
+
+    uint8_t buf[4096];
+    ssize_t rv;
+    
+    while ((rv = SSL_read(ssl, buf, sizeof(buf))) > 0) {
+        if (nghttp2_session_mem_recv(conn->session, buf, rv) < 0) {
+            break;
+        }
+        if (nghttp2_session_send(conn->session) < 0) {
+            break;
+        }
+    }
+    
+    http2_cleanup_connection(conn);
+}
+
+static int next_proto_cb(SSL *ssl, const unsigned char **data,
+                        unsigned int *len, void *arg) {
+    (void)ssl;
+    (void)arg;
+    static const unsigned char protos[] = {2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.' ,'1'};
+    *data = protos;
+    *len = sizeof(protos);
+    return SSL_TLSEXT_ERR_OK;
+}
+
+void configure_http2_context(SSL_CTX *ctx) {
+    // ALPN protocols
+    const unsigned char alpn_protos[] = {2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.' ,'1'};
+    SSL_CTX_set_alpn_protos(ctx, alpn_protos, sizeof(alpn_protos));
+    SSL_CTX_set_next_protos_advertised_cb(ctx, next_proto_cb, NULL);
+}
+
+void safe_write(int fd, const void* buf, size_t count) {
+    ssize_t bytes_written;
+    size_t total_written = 0;
+    const char* ptr = buf;
+    
+    while (total_written < count) {
+        bytes_written = write(fd, ptr + total_written, count - total_written);
+        if (bytes_written < 0) {
+            if (errno == EINTR) continue;
+            perror("write failed");
+            break;
+        }
+        total_written += bytes_written;
     }
 }
 
@@ -117,6 +173,17 @@ int main() {
                 SSL_free(ssl);
                 continue;
             }
+
+            if (config.http2_enabled) {
+                const unsigned char* alpn = NULL;
+                unsigned int alpn_len;
+                SSL_get0_alpn_selected(ssl, &alpn, &alpn_len);
+                
+                if (alpn_len == 2 && memcmp("h2", alpn, 2) == 0) {
+                    handle_http2_connection(new_socket, ssl, &config);
+                    continue;
+                }
+            }
         }
 
         ssize_t bytes_read = read(new_socket, buffer, BUFFER_SIZE - 1);
@@ -148,7 +215,7 @@ int main() {
             if (config.enable_https) {
                 SSL_write(ssl, http_response, response_size);
             } else {
-                write(new_socket, http_response, response_size);
+                safe_write(new_socket, http_response, response_size);
             }
             free(http_response);
         } else {
@@ -158,7 +225,7 @@ int main() {
                 if (config.enable_https) {
                     SSL_write(ssl, error_resp, response_size);
                 } else {
-                    write(new_socket, error_resp, response_size);
+                    safe_write(new_socket, error_resp, response_size);
                 }
                 free(error_resp);
             }

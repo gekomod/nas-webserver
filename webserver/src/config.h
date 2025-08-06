@@ -36,6 +36,13 @@ typedef struct {
     int max_threads;
     int max_connections;
     int connection_timeout;
+
+    // HTTP/2 Configuration
+    int http2_enabled;
+    char http2_cert_path[256];
+    char http2_key_path[256];
+    unsigned int http2_max_streams;
+    unsigned int http2_window_size;
 } Config;
 
 Config load_config();

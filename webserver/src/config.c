@@ -6,6 +6,16 @@
 #include <sys/stat.h>
 #include "config.h"
 
+void safe_strcpy(char* dest, const char* src, size_t dest_size) {
+    if (!dest || !src || dest_size == 0) return;
+    
+    size_t src_len = strlen(src);
+    size_t copy_len = src_len < dest_size ? src_len : dest_size - 1;
+    
+    memcpy(dest, src, copy_len);
+    dest[copy_len] = '\0';
+}
+
 Config load_config() {
     Config config = {
         // Default values
@@ -29,7 +39,12 @@ Config load_config() {
         .log_backup_count = 5,
         .max_threads = 10,
         .max_connections = 100,
-        .connection_timeout = 30
+        .connection_timeout = 30,
+        .http2_enabled = 0,
+        .http2_cert_path = "",
+        .http2_key_path = "",
+        .http2_max_streams = 100,
+        .http2_window_size = 65536
     };
 
     FILE *config_file = fopen("/etc/nas-web/nas-web.conf", "r");
@@ -49,19 +64,19 @@ Config load_config() {
                 if (port > 0 && port <= 65535) config.port = port;
             }
             else if (strcmp(key, "FRONTEND_PATH") == 0) {
-                strncpy(config.frontend_path, value, sizeof(config.frontend_path)-1);
+                safe_strcpy(config.frontend_path, value, sizeof(config.frontend_path)-1);
             }
             else if (strcmp(key, "API_PREFIX") == 0) {
-                strncpy(config.api_prefix, value, sizeof(config.api_prefix)-1);
+                safe_strcpy(config.api_prefix, value, sizeof(config.api_prefix)-1);
             }
             else if (strcmp(key, "ENABLE_HTTPS") == 0) {
                 config.enable_https = (strcasecmp(value, "true") == 0);
             }
             else if (strcmp(key, "SSL_CERT_PATH") == 0) {
-                strncpy(config.ssl_cert_path, value, sizeof(config.ssl_cert_path)-1);
+                safe_strcpy(config.ssl_cert_path, value, sizeof(config.ssl_cert_path)-1);
             }
             else if (strcmp(key, "SSL_KEY_PATH") == 0) {
-                strncpy(config.ssl_key_path, value, sizeof(config.ssl_key_path)-1);
+                safe_strcpy(config.ssl_key_path, value, sizeof(config.ssl_key_path)-1);
             }
             else if (strcmp(key, "CACHE_ENABLED") == 0) {
                 config.cache_enabled = (strcasecmp(value, "true") == 0);
@@ -94,7 +109,7 @@ Config load_config() {
             else if (strcmp(key, "LOG_LEVEL") == 0) {
                 if (strcasecmp(value, "debug") == 0 || strcasecmp(value, "info") == 0 ||
 		    strcasecmp(value, "warning") == 0 || strcasecmp(value, "error") == 0) {
-		    strncpy(config.log_level, value, sizeof(config.log_level)-1);
+		    safe_strcpy(config.log_level, value, sizeof(config.log_level)-1);
                 }
             }
             else if (strcmp(key, "LOG_FILE") == 0) {

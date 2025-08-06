@@ -1,3 +1,14 @@
+nas-webserver (1.2.3) stable; urgency=medium
+
+  * Aktualizacja systemu zarządzania pamięcią podręczną
+  * Optymalizacja obsługi żądań HTTP
+  * Dodanie obsługi HTTP/2
+  * Poprawki bezpieczeństwa w module SSL
+  * Dodanie wsparcia dla dodatkowych typów MIME
+  * Ulepszenia w logowaniu błędów
+
+ -- Gekomod <zaba141@o2.pl>  Tue, 20 Jun 2023 14:30:00 +0200
+
 nas-web (1.2.2) UNRELEASED; urgency=medium
 
   * Add SSL, Gzip, Error Page, Profiler
