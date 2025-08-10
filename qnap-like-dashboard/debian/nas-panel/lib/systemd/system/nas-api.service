@@ -1,0 +1,15 @@
+[Unit]
+Description=NAS Panel API Service
+After=network.target nas-engine.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/nas-panel
+ExecStart=/usr/bin/node /opt/nas-panel/server.cjs
+Restart=always
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

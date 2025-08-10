@@ -1,0 +1,73 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# Pomijamy kroki związane z tworzeniem archiwum
+override_dh_auto_configure:
+	export npm_config_platform=linux; \
+	export npm_config_arch=x64; \
+	export npm_config_target_arch=x64; \
+	export npm_config_target_platform=linux
+
+override_dh_auto_build:
+	cd backend && npm install --force --quiet && npm run build
+
+override_dh_auto_install:
+	if [ ! -L /lib/libc.musl-x86_64.so.1 ]; then \
+		ln -s /usr/lib/x86_64-linux-musl/libc.so /lib/libc.musl-x86_64.so.1; \
+	fi
+
+	# Install frontend files
+	mkdir -p debian/nas-panel/opt/nas-panel
+	cp -r backend/dist/* debian/nas-panel/opt/nas-panel/
+	
+	# Install backend files (assuming they're in a backend/ directory)
+	rsync -av --progress --exclude='node_modules' backend/ debian/nas-panel/opt/nas-panel/
+	
+	# Install systemd services
+	mkdir -p debian/nas-panel/lib/systemd/system
+	cp debian/nas-api.service debian/nas-panel/lib/systemd/system/
+	cp debian/nas-webdav.service debian/nas-panel/lib/systemd/system/
+
+	# Install docker-autostart
+	install -D -m 755 debian/scripts/docker-autostart.sh debian/nas-panel/usr/local/bin/docker-autostart.sh
+	install -m 644 debian/nas-docker-autostart.service debian/nas-panel/lib/systemd/system/
+	install -m 644 debian/nas-docker-autosave.service debian/nas-panel/lib/systemd/system/
+
+	# Add Docker container autostart service
+	cp debian/nas-docker-autostart.service debian/nas-panel/lib/systemd/system/
+
+	# Create directory in /etc/
+	install -d debian/nas-panel/etc/nas-panel
+	install -m 644 debian/configs/settings.json debian/nas-panel/etc/nas-panel/
+	install -m 644 debian/configs/webdav.conf debian/nas-panel/etc/nas-panel/
+	install -m 644 debian/configs/cron-jobs.json debian/nas-panel/etc/nas-panel/
+
+	# Install default configs
+	install -d debian/nas-panel/usr/share/nas-panel/default-config
+	install -m 644 debian/configs/settings.json debian/nas-panel/usr/share/nas-panel/default-config/
+	install -m 644 debian/configs/webdav.conf debian/nas-panel/usr/share/nas-panel/default-config/
+	install -m 644 debian/configs/cron-jobs.json debian/nas-panel/usr/share/nas-panel/default-config/
+
+	install -d debian/nas-panel/usr/bin/
+	install -d debian/nas-panel/usr/local/bin/
+	install -m 755 debian/scripts/update-dynamic-dns.py debian/nas-panel/usr/bin/
+
+	# Install Docker autostart script
+	install -m 755 debian/scripts/docker-autostart.sh debian/nas-panel/usr/local/bin/
+
+	rm -fr debian/nas-panel/usr/local/bin/nas-webdav
+	g++ -std=c++17 -O2 debian/nas-webdav.cpp -o debian/nas-panel/usr/local/bin/nas-webdav
+	chmod +x debian/nas-panel/usr/local/bin/nas-webdav
+
+	rm -fr debian/nas-panel/usr/local/bin/docker-backup
+	chmod +x debian/scripts/docker-backup
+	install -m 755 debian/scripts/docker-backup debian/nas-panel/usr/local/bin/docker-backup
+
+override_dh_shlibdeps:
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info
+
+override_dh_usrlocal:
+
+override_dh_strip_nondeterminism:

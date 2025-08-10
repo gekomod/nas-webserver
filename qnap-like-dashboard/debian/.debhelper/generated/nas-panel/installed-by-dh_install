@@ -1,0 +1,3 @@
+./debian/scripts/docker-autostart.sh
+./debian/scripts/docker-backup
+./debian/scripts/update-dynamic-dns.py
