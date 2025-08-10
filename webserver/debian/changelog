@@ -1,4 +1,21 @@
-nas-webserver (1.2.3) stable; urgency=medium
+nas-web (1.2.4) unstable; urgency=medium
+
+  * Fix Load Images
+
+ -- Gekomod <zaba141@o2.pl>  Wed, 10 Jun 2025 14:30:00 +0200
+
+nas-web (1.2.3-1) unstable; urgency=medium
+
+  * Zabezpieczenie funkcji api_echo przed przekroczeniem bufora
+  * Poprawa obsługi błędów alokacji pamięci
+  * Dodanie mechanizmów obrony przed NULL w requestach API
+  * Usprawnienie generowania odpowiedzi JSON
+  * Aktualizacja nagłówków CORS dla endpointów
+  * Optymalizacja zarządzania pamięcią w odpowiedziach HTTP
+
+ -- Gekomod <zaba141@o2.pl>  Wed, 26 Jun 2024 14:30:00 +0200
+
+nas-web (1.2.3) stable; urgency=medium
 
   * Aktualizacja systemu zarządzania pamięcią podręczną
   * Optymalizacja obsługi żądań HTTP

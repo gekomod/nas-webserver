@@ -20,7 +20,7 @@ static FileCache file_cache[MAX_CACHE_SIZE];
 static MiddlewareFunc middlewares[MAX_MIDDLEWARES];
 static ApiEndpoint api_endpoints[MAX_ENDPOINTS];
 static int middleware_count = 0;
-static int endpoint_count = 0;
+int endpoint_count = 0;
 static int cache_initialized = 0;
 
 /* ========== FUNKCJE POMOCNICZE ========== */
@@ -241,6 +241,7 @@ const char* get_mime_type(const char* filename) {
     
     ext++;
     
+    if (strcasecmp(ext, "wasm") == 0) return "application/wasm";
     if (strcasecmp(ext, "html") == 0) return "text/html";
     if (strcasecmp(ext, "js") == 0) return "application/javascript";
     if (strcasecmp(ext, "css") == 0) return "text/css";
@@ -253,7 +254,6 @@ const char* get_mime_type(const char* filename) {
     if (strcasecmp(ext, "woff") == 0) return "font/woff";
     if (strcasecmp(ext, "woff2") == 0) return "font/woff2";
     if (strcasecmp(ext, "ttf") == 0) return "font/ttf";
-    if (strcasecmp(ext, "wasm") == 0) return "application/wasm";
     if (strcasecmp(ext, "txt") == 0) return "text/plain";
     if (strcasecmp(ext, "xml") == 0) return "application/xml";
     
@@ -301,147 +301,124 @@ void enable_cors(HTTPResponse* response) {
     add_header(response, "Access-Control-Allow-Headers", "Content-Type");
 }
 
-HTTPResponse api_status(void) {
+HTTPResponse api_status(HTTPRequest* request) {
+    (void)request;  // Oznaczamy jako nieużywany parametr
+    
     HTTPResponse response = {0};
     response.status_code = 200;
     strcpy(response.content_type, "application/json");
     const char* content = "{\"status\":\"running\",\"version\":\"1.0\",\"endpoints\":[\"/api/status\",\"/api/echo\"]}";
     response.content = my_strdup(content);
     response.content_size = strlen(content);
-    enable_cors(&response);
     return response;
 }
 
-HTTPResponse api_echo(const HTTPRequest* request) {
+HTTPResponse api_echo(HTTPRequest* request) {
     HTTPResponse response = {0};
     response.status_code = 200;
     strcpy(response.content_type, "application/json");
     
-    size_t needed = snprintf(NULL, 0, "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%s\"}",
-                           request->method, request->path, request->body) + 1;
+    // Zabezpieczenie przed NULL w request
+    const char* method = request && request->method ? request->method : "";
+    const char* path = request && request->path ? request->path : "";
+    const char* body = request && request->body ? request->body : "";
+
+    // Obliczenie wymaganego rozmiaru bufora
+    size_t needed = snprintf(NULL, 0, 
+        "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%.2000s\"}",
+        method, path, body) + 1;
+
+    // Alokacja pamięci
     response.content = malloc(needed);
-    if (response.content) {
-        snprintf(response.content, needed, "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%s\"}",
-                request->method, request->path, request->body);
-        response.content_size = needed - 1;
-    } else {
+    if (!response.content) {
         response.status_code = 500;
         response.content_size = 0;
+        return response;
     }
+
+    // Formatowanie odpowiedzi z ograniczeniem długości body
+    snprintf(response.content, needed,
+        "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%.2000s\"}",
+        method, path, body);
     
+    response.content_size = needed - 1;
     enable_cors(&response);
+    
     return response;
 }
 
 HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
     HTTPResponse response = {0};
-    response.content = NULL;
-    response.content_size = 0;
-    response.is_binary = 0;
-    response.is_wasm = 0;
-    response.skip_compression = 0;
-    response.headers[0] = '\0';
-
-    printf("DEBUG: Handling request for path: %s\n", request->path);
-
-    for (int i = 0; i < middleware_count; i++) {
-        HTTPResponse middleware_res = middlewares[i]((HTTPRequest*)request);
-        if (middleware_res.status_code != 200) {
-            return middleware_res;
-        }
-    }
-
     char decoded_path[1024] = {0};
     char file_path[2048] = {0};
-
+    
+    // 1. Normalizacja ścieżki
     strncpy(decoded_path, request->path, sizeof(decoded_path)-1);
     url_decode(decoded_path);
     normalize_path(decoded_path);
+    
+    printf("DEBUG: Handling path: '%s'\n", decoded_path); // Log diagnostyczny
 
-    printf("DEBUG: Decoded path: %s\n", decoded_path);
-
-    if (strstr(decoded_path, config->api_prefix) == decoded_path) {
+    // 2. Sprawdzenie endpointów API (najpierw!)
+    if (strncmp(decoded_path, config->api_prefix, strlen(config->api_prefix)) == 0) {
+        printf("DEBUG: This is an API request\n");
+        
         for (int i = 0; i < endpoint_count; i++) {
+            printf("DEBUG: Checking endpoint '%s'\n", api_endpoints[i].path);
+            
             if (strcmp(decoded_path, api_endpoints[i].path) == 0) {
-                printf("DEBUG: Calling API endpoint: %s\n", decoded_path);
+                printf("DEBUG: Found handler for '%s'\n", decoded_path);
                 return api_endpoints[i].handler((HTTPRequest*)request);
             }
         }
-        printf("DEBUG: API endpoint not found: %s\n", decoded_path);
+        printf("ERROR: No handler for API path '%s'\n", decoded_path);
         return error_response(404, "Endpoint not found");
     }
 
+    // 3. Obsługa plików statycznych (assets, static)
     if (strstr(decoded_path, "/assets/") == decoded_path || 
         strstr(decoded_path, "/static/") == decoded_path) {
-
+        
         snprintf(file_path, sizeof(file_path), "%s%s", config->frontend_path, decoded_path);
-        printf("DEBUG: Serving static file: %s\n", file_path);
+        
+        // Specjalna obsługa WASM
+        if (strstr(file_path, ".wasm") != NULL) {
+            return handle_wasm_file(file_path);
+        }
         
         response.content = read_file_content(file_path, &response.content_size);
-        
         if (response.content) {
             response.status_code = 200;
             const char* mime_type = get_mime_type(file_path);
             strcpy(response.content_type, mime_type ? mime_type : DEFAULT_MIME_TYPE);
-
-            if (strstr(file_path, ".wasm") != NULL) {
-                strcpy(response.content_type, "application/wasm");
-                response.is_binary = 1;
-                response.is_wasm = 1;
-                response.skip_compression = 1;
-                add_header(&response, "Access-Control-Allow-Origin", "*");
-                add_header(&response, "Cross-Origin-Opener-Policy", "same-origin");
-                add_header(&response, "Cross-Origin-Embedder-Policy", "require-corp");
-            } else if (strstr(file_path, ".gz") || strstr(file_path, ".br") || 
-                     strstr(file_path, ".png") || strstr(file_path, ".jpg") || 
-                     strstr(file_path, ".webp")) {
-                response.skip_compression = 1;
-            }
-
-            printf("DEBUG: Sending file: %s (%zu bytes, type: %s)\n", 
-                  file_path, response.content_size, response.content_type);
             return response;
-        } else {
-            printf("ERROR: Failed to read file: %s\n", file_path);
-            return error_response(404, "Static file not found");
         }
+        return error_response(404, "Static file not found");
     }
 
-    struct stat st;
-    int file_exists = 0;
-
+    // 4. Dla innych ścieżek z rozszerzeniem (np. .css, .js)
     if (strchr(decoded_path, '.') != NULL) {
         snprintf(file_path, sizeof(file_path), "%s%s", config->frontend_path, decoded_path);
-        file_exists = (stat(file_path, &st) == 0 && S_ISREG(st.st_mode));
-        
-        if (file_exists) {
-            printf("DEBUG: Serving specific file: %s\n", file_path);
+        struct stat st;
+        if (stat(file_path, &st) == 0 && S_ISREG(st.st_mode)) {
             response.content = read_file_content(file_path, &response.content_size);
             if (response.content) {
                 response.status_code = 200;
-                const char* mime_type = get_mime_type(file_path);
-                strcpy(response.content_type, mime_type ? mime_type : DEFAULT_MIME_TYPE);
+                strcpy(response.content_type, get_mime_type(file_path));
                 return response;
-            } else {
-                printf("ERROR: Failed to read file: %s\n", file_path);
-                return error_response(500, "Internal server error while reading file");
             }
         }
     }
 
-    if (strchr(decoded_path, '.') == NULL) {
-        snprintf(file_path, sizeof(file_path), "%s/index.html", config->frontend_path);
-        printf("DEBUG: Serving index.html: %s\n", file_path);
-        response.content = read_file_content(file_path, &response.content_size);
-        
-        if (response.content) {
-            response.status_code = 200;
-            strcpy(response.content_type, "text/html");
-            return response;
-        }
+    // 5. Domyślnie: index.html dla SPA
+    snprintf(file_path, sizeof(file_path), "%s/index.html", config->frontend_path);
+    response.content = read_file_content(file_path, &response.content_size);
+    if (response.content) {
+        response.status_code = 200;
+        strcpy(response.content_type, "text/html");
+        return response;
     }
 
-    printf("DEBUG: File not found: %s\n", decoded_path);
     return error_response(404, "File not found");
 }
 
@@ -465,27 +442,22 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
           response->status_code, response->content_type, response->content_size);
 
     char headers[2048] = {0};
-    
-    if (response->is_wasm) {
+
+    if (strcmp(response->content_type, "application/wasm") == 0) {
         snprintf(headers, sizeof(headers),
-            "HTTP/1.1 %d %s\r\n"
+            "HTTP/1.1 %d OK\r\n"
             "Content-Type: application/wasm\r\n"
             "Content-Length: %zu\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
             "Cross-Origin-Opener-Policy: same-origin\r\n"
             "Cross-Origin-Embedder-Policy: require-corp\r\n"
-            "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-            "Pragma: no-cache\r\n"
-            "Expires: 0\r\n"
-            "Connection: close\r\n"
-            "\r\n",
+            "Cache-Control: no-store\r\n"
+            "Connection: close\r\n\r\n",
             response->status_code,
-            status_msg,
             response->content_size);
     } else {
         snprintf(headers, sizeof(headers),
             "HTTP/1.1 %d %s\r\n"
-            "Content-Type: %s; charset=utf-8\r\n"
+            "Content-Type: %s\r\n"
             "Content-Length: %zu\r\n"
             "%s"
             "Connection: close\r\n"
@@ -520,6 +492,80 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
     }
 
     return http_response;
+}
+
+HTTPResponse handle_wasm_file(const char* file_path) {
+    FILE* file = fopen(file_path, "rb");
+    if (!file) {
+        return error_response(404, "WASM file not found");
+    }
+
+    fseek(file, 0, SEEK_END);
+    size_t file_size = ftell(file);
+    rewind(file);
+
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/wasm");
+    response.is_binary = 1;
+    response.skip_compression = 1; // Wyłącz kompresję dla WASM
+    response.content = malloc(file_size);
+    
+    if (response.content) {
+        size_t bytes_read = fread(response.content, 1, file_size, file);
+        if (bytes_read != file_size) {
+            free(response.content);
+            fclose(file);
+            return error_response(500, "Failed to read WASM file");
+        }
+        response.content_size = file_size;
+        
+        // Nagłówki wymagane dla WebAssembly
+        add_header(&response, "Cross-Origin-Opener-Policy", "same-origin");
+        add_header(&response, "Cross-Origin-Embedder-Policy", "require-corp");
+        add_header(&response, "Cache-Control", "no-store");
+    } else {
+        fclose(file);
+        return error_response(500, "Memory allocation failed");
+    }
+    
+    fclose(file);
+    return response;
+}
+
+HTTPResponse handle_wasm_request(const char* file_path) {
+    FILE* file = fopen(file_path, "rb");
+    if (!file) {
+        return error_response(404, "WASM file not found");
+    }
+
+    fseek(file, 0, SEEK_END);
+    size_t file_size = ftell(file);
+    rewind(file);
+
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/wasm");
+    response.is_binary = 1;
+    response.skip_compression = 1;  // Disable compression for WASM
+    response.content = malloc(file_size);
+    
+    if (response.content) {
+        size_t bytes_read = fread(response.content, 1, file_size, file);
+        if (bytes_read == file_size) {
+            response.content_size = file_size;
+            // Required security headers for WASM
+            add_header(&response, "Cross-Origin-Opener-Policy", "same-origin");
+            add_header(&response, "Cross-Origin-Embedder-Policy", "require-corp");
+        } else {
+            free(response.content);
+            fclose(file);
+            return error_response(500, "Error reading WASM file");
+        }
+    }
+    
+    fclose(file);
+    return response;
 }
 
 void free_response(HTTPResponse* response) {

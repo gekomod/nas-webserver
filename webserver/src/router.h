@@ -32,6 +32,7 @@ typedef struct HTTPResponse {
 typedef HTTPResponse (*MiddlewareFunc)(HTTPRequest*);
 typedef HTTPResponse (*ApiHandler)(HTTPRequest*);
 
+
 typedef struct {
     char* path;
     ApiHandler handler;
@@ -53,6 +54,7 @@ void enable_cors(HTTPResponse* response);
 
 HTTPRequest parse_request(const char* raw_request);
 HTTPResponse handle_request(const HTTPRequest* request, const Config* config);
+HTTPResponse handle_wasm_file(const char* file_path);
 char* build_response(const HTTPResponse* response, size_t* response_size, const Config* config);
 char* read_file_content(const char* path, size_t* out_size);
 void url_decode(char* str);
@@ -61,8 +63,9 @@ void register_middleware(MiddlewareFunc func);
 void register_endpoint(const char* path, ApiHandler handler);
 void init_cache();
 void free_cache();
+extern int endpoint_count;
 
-HTTPResponse api_status(void);
-HTTPResponse api_echo(const HTTPRequest* request);
+HTTPResponse api_status(HTTPRequest* request); 
+HTTPResponse api_echo(HTTPRequest* request);
 
 #endif

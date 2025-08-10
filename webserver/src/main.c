@@ -102,6 +102,9 @@ int main() {
     Config config = load_config();
     init_cache();
 
+    register_endpoint("/api/status", api_status);
+    register_endpoint("/api/status", api_echo);
+
     SSL_CTX* ctx = NULL;
     if (config.enable_https) {
         ctx = create_context();
