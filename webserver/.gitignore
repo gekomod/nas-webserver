@@ -2,3 +2,4 @@
 *.o
 dist/
 debian/nas-web
+qnap-like-dashboard/
