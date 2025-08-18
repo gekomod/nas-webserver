@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <openssl/ssl.h>
 
+// Dodaj te deklaracje:
+void safe_write(int fd, const void* buf, size_t count);
+void handle_http2_connection(int socket, SSL *ssl, const Config *config);
+
 typedef struct HTTPResponse HTTPResponse;
 typedef struct HTTPRequest HTTPRequest;
 

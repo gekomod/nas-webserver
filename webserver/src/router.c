@@ -9,6 +9,8 @@
 #include <openssl/ssl.h>
 #include "router.h"
 #include "error.h"
+#include <errno.h>  // Dodaj tę linię
+#include <unistd.h> // Dodaj dla write()
 #include "profiler.h"
 
 #define MAX_CACHE_SIZE 100
@@ -575,5 +577,23 @@ void free_response(HTTPResponse* response) {
             response->content = NULL;
         }
         response->content_size = 0;
+    }
+}
+
+void safe_write(int fd, const void* buf, size_t count) {
+    ssize_t bytes_written;
+    size_t total_written = 0;
+    const char* ptr = buf;
+    
+    while (total_written < count) {
+        bytes_written = write(fd, ptr + total_written, count - total_written);
+        if (bytes_written < 0) {
+            if (errno == EINTR) {
+                continue;  // Przerwij jeśli sygnał przerwał zapis
+            }
+            perror("write failed");
+            break;
+        }
+        total_written += bytes_written;
     }
 }
