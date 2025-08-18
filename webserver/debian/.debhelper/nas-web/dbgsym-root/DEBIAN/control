@@ -5,9 +5,9 @@ Version: 1.2.5
 Auto-Built-Package: debug-symbols
 Architecture: amd64
 Maintainer: Your Name <your.email@example.com>
-Installed-Size: 59
+Installed-Size: 62
 Depends: nas-web (= 1.2.5)
 Section: debug
 Priority: optional
 Description: debug symbols for nas-web
-Build-Ids: d8fcd0f88f6b44480b36ec17dd63bf6738d49b65
+Build-Ids: 65d1f6d887854d73bc5933d5fb3962ffbcc6d3dc

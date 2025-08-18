@@ -81,8 +81,14 @@ void handle_connection_wrapper(void *arg) {
     SSL *ssl = conn_args->ssl;
     Config *config = conn_args->config;
     
+    // Bufor na dane wejściowe
     char buffer[BUFFER_SIZE] = {0};
-    ssize_t bytes_read = read(socket, buffer, BUFFER_SIZE - 1);
+    
+    // Zabezpieczone czytanie
+    ssize_t bytes_read;
+    do {
+        bytes_read = read(socket, buffer, BUFFER_SIZE - 1);
+    } while (bytes_read == -1 && errno == EINTR);
     
     if (bytes_read > 0) {
         buffer[bytes_read] = '\0';
@@ -102,23 +108,12 @@ void handle_connection_wrapper(void *arg) {
                 safe_write(socket, http_response, response_size);
             }
             free(http_response);
-        } else {
-            HTTPResponse error = error_response(500, "Internal Server Error");
-            char* error_resp = build_response(&error, &response_size, config);
-            if (error_resp) {
-                if (config->enable_https) {
-                    SSL_write(ssl, error_resp, response_size);
-                } else {
-                    safe_write(socket, error_resp, response_size);
-                }
-                free(error_resp);
-            }
-            free_response(&error);
         }
         
         free_response(&response);
     }
     
+    // Bezpieczne zamykanie połączenia
     if (config->enable_https && ssl) {
         SSL_shutdown(ssl);
         SSL_free(ssl);
@@ -130,8 +125,9 @@ void handle_connection_wrapper(void *arg) {
 int main() {
     PROFILE_FUNCTION();
     Config config = load_config();
+    cache_init();
+    atexit(cache_cleanup);
     init_logging(&config);
-    init_cache();
 
     register_endpoint("/api/status", api_status);
     register_endpoint("/api/echo", api_echo);
