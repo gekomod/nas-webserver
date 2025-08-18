@@ -13,6 +13,7 @@
 #include "profiler.h"
 #include "threadpool.h"
 #include "http2.c"
+#include "logging.h"
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -129,6 +130,7 @@ void handle_connection_wrapper(void *arg) {
 int main() {
     PROFILE_FUNCTION();
     Config config = load_config();
+    init_logging(&config);
     init_cache();
 
     register_endpoint("/api/status", api_status);
@@ -195,8 +197,8 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("Server running on port %d (%s) with %d threads\n", config.port, 
-           config.enable_https ? "HTTPS" : "HTTP", config.max_threads);
+    log_message(LOG_ACCESS, "Server starting on port %d (%s) with %d threads\n", 
+               config.port, config.enable_https ? "HTTPS" : "HTTP", config.max_threads);
 
     while (1) {
         PROFILE_BLOCK(RequestHandling);
@@ -254,6 +256,8 @@ int main() {
             free(conn_args);
         }
     }
+
+    atexit(close_logs);
 
     if (config.enable_https) {
         SSL_CTX_free(ctx);

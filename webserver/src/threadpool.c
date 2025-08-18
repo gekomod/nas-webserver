@@ -36,6 +36,12 @@ ThreadPool* threadpool_create(int thread_count, int queue_size) {
     ThreadPool *pool = (ThreadPool *)malloc(sizeof(ThreadPool));
     if (!pool) return NULL;
 
+    // Ograniczenie liczby wątków i rozmiaru kolejki
+    if (thread_count <= 0 || thread_count > 1000 || 
+        queue_size <= 0 || queue_size > 100000) {
+        return NULL;
+    }
+
     pool->queue = (Task *)malloc(sizeof(Task) * queue_size);
     if (!pool->queue) {
         free(pool);

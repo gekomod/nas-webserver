@@ -12,6 +12,7 @@
 #include <errno.h>  // Dodaj tę linię
 #include <unistd.h> // Dodaj dla write()
 #include "profiler.h"
+#include "logging.h"
 
 #define MAX_CACHE_SIZE 100
 #define MAX_MIDDLEWARES 10
@@ -353,6 +354,20 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
     HTTPResponse response = {0};
     char decoded_path[1024] = {0};
     char file_path[2048] = {0};
+
+        log_message(LOG_ACCESS, "Request: %s %s from %s", 
+               request->method, request->path, 
+               request->ssl ? "HTTPS" : "HTTP");
+
+    if (strstr(request->path, "../") || strstr(request->path, "..\\")) {
+        log_message(LOG_SECURITY, "Path traversal attempt detected: %s", request->path);
+        return error_response(403, "Forbidden");
+    }
+
+    if (strlen(request->path) > 1024) {
+        log_message(LOG_SECURITY, "Path too long: %s", request->path);
+        return error_response(414, "URI Too Long");
+    }
     
     // 1. Normalizacja ścieżki
     strncpy(decoded_path, request->path, sizeof(decoded_path)-1);
@@ -419,6 +434,11 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
         response.status_code = 200;
         strcpy(response.content_type, "text/html");
         return response;
+    }
+
+    if (response.status_code >= 400) {
+        log_message(LOG_ERROR, "Error %d for %s %s", 
+                   response.status_code, request->method, request->path);
     }
 
     return error_response(404, "File not found");

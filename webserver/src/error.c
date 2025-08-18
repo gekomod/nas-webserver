@@ -3,6 +3,7 @@
 #include <string.h>
 #include "error.h"
 #include "router.h"
+#include "logging.h"
 
 const char* error_message(ErrorCode code) {
     switch (code) {
@@ -19,6 +20,8 @@ HTTPResponse error_response(int status_code, const char* message) {
     HTTPResponse response = {0};
     response.status_code = status_code;
     strcpy(response.content_type, "text/html");
+
+    log_message(LOG_ERROR, "Error %d: %s", status_code, message);
     
     // Generate HTML error page
     size_t needed = snprintf(NULL, 0, 

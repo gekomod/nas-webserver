@@ -44,7 +44,10 @@ Config load_config() {
         .http2_cert_path = "",
         .http2_key_path = "",
         .http2_max_streams = 100,
-        .http2_window_size = 65536
+        .http2_window_size = 65536,
+        .access_log_path = "/var/log/nas-web/access.log",
+        .error_log_path = "/var/log/nas-web/error.log",
+        .security_log_path = "/var/log/nas-web/security.log"
     };
 
     FILE *config_file = fopen("/etc/nas-web/nas-web.conf", "r");

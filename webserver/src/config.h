@@ -43,6 +43,11 @@ typedef struct {
     char http2_key_path[256];
     unsigned int http2_max_streams;
     unsigned int http2_window_size;
+
+    // Miscellaneous
+    char access_log_path[256];
+    char error_log_path[256];
+    char security_log_path[256];
 } Config;
 
 Config load_config();
