@@ -1,6 +1,8 @@
 nas-web (1.2.5) unstable; urgency=medium
 
   * Add support MultiThreads
+  * Fix cache
+  * Add Logging
 
  -- Gekomod <zaba141@o2.pl>  Wed, 18 Jun 2025 15:12:00 +0200
 
