@@ -359,14 +359,17 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
                request->method, request->path, 
                request->ssl ? "HTTPS" : "HTTP");
 
-    if (strstr(request->path, "../") || strstr(request->path, "..\\")) {
-        log_message(LOG_SECURITY, "Path traversal attempt detected: %s", request->path);
-        return error_response(403, "Forbidden");
-    }
-
-    if (strlen(request->path) > 1024) {
-        log_message(LOG_SECURITY, "Path too long: %s", request->path);
-        return error_response(414, "URI Too Long");
+        // Add specific handling for CSS files
+    if (strstr(decoded_path, ".css") != NULL) {
+        snprintf(file_path, sizeof(file_path), "%s%s", config->frontend_path, decoded_path);
+        
+        response.content = read_file_content(file_path, &response.content_size);
+        if (response.content) {
+            response.status_code = 200;
+            strcpy(response.content_type, "text/css");
+            return response;
+        }
+        return error_response(404, "CSS file not found");
     }
     
     // 1. Normalizacja ścieżki
