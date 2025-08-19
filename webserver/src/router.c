@@ -9,26 +9,19 @@
 #include <openssl/ssl.h>
 #include "router.h"
 #include "error.h"
-#include <errno.h>  // Dodaj tę linię
-#include <unistd.h> // Dodaj dla write()
 #include "profiler.h"
-#include "logging.h"
 
 #define MAX_CACHE_SIZE 100
 #define MAX_MIDDLEWARES 10
 #define MAX_ENDPOINTS 20
 #define DEFAULT_MIME_TYPE "application/octet-stream"
 
+static FileCache file_cache[MAX_CACHE_SIZE];
 static MiddlewareFunc middlewares[MAX_MIDDLEWARES];
 static ApiEndpoint api_endpoints[MAX_ENDPOINTS];
 static int middleware_count = 0;
 int endpoint_count = 0;
 static int cache_initialized = 0;
-static FileCache* file_cache = NULL;
-static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t cache_entry_mutexes[MAX_CACHE_SIZE];
-static pthread_mutex_t cache_init_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t cache_global_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ========== FUNKCJE POMOCNICZE ========== */
 
@@ -48,145 +41,71 @@ char* my_strdup(const char* s) {
 }
 
 void init_cache() {
-    for (int i = 0; i < MAX_CACHE_SIZE; i++) {
-        pthread_mutex_init(&cache_entry_mutexes[i], NULL);
+    if (!cache_initialized) {
+        memset(file_cache, 0, sizeof(file_cache));
+        cache_initialized = 1;
     }
 }
 
 void free_cache() {
-    pthread_mutex_lock(&cache_global_mutex);
     for (int i = 0; i < MAX_CACHE_SIZE; i++) {
-        pthread_mutex_lock(&file_cache[i].lock);
         if (file_cache[i].path) {
             free(file_cache[i].path);
             if (file_cache[i].content) {
                 free(file_cache[i].content);
             }
         }
-        pthread_mutex_unlock(&file_cache[i].lock);
-        pthread_mutex_destroy(&file_cache[i].lock);
     }
     cache_initialized = 0;
-    pthread_mutex_unlock(&cache_global_mutex);
-}
-
-void cache_init() {
-    pthread_mutex_lock(&cache_mutex);
-    if (!cache_initialized) {
-        file_cache = calloc(MAX_CACHE_SIZE, sizeof(FileCache));
-        if (!file_cache) {
-            perror("Failed to allocate cache memory");
-            exit(EXIT_FAILURE);
-        }
-        
-        for (int i = 0; i < MAX_CACHE_SIZE; i++) {
-            pthread_mutex_init(&file_cache[i].lock, NULL);
-        }
-        cache_initialized = 1;
-    }
-    pthread_mutex_unlock(&cache_mutex);
-}
-
-void cache_cleanup() {
-    pthread_mutex_lock(&cache_mutex);
-    if (cache_initialized) {
-        for (int i = 0; i < MAX_CACHE_SIZE; i++) {
-            pthread_mutex_lock(&file_cache[i].lock);
-            if (file_cache[i].path) {
-                free(file_cache[i].path);
-                file_cache[i].path = NULL;
-            }
-            if (file_cache[i].content) {
-                free(file_cache[i].content);
-                file_cache[i].content = NULL;
-            }
-            pthread_mutex_unlock(&file_cache[i].lock);
-            pthread_mutex_destroy(&file_cache[i].lock);
-        }
-        free(file_cache);
-        file_cache = NULL;
-        cache_initialized = 0;
-    }
-    pthread_mutex_unlock(&cache_mutex);
 }
 
 FileCache* get_cached_file(const char* path) {
-    pthread_mutex_lock(&cache_mutex);
+    if (!cache_initialized) return NULL;
+    
+    struct stat st;
+    if (stat(path, &st) != 0) return NULL;
     
     for (int i = 0; i < MAX_CACHE_SIZE; i++) {
-        pthread_mutex_lock(&cache_entry_mutexes[i]);
         if (file_cache[i].path && strcmp(file_cache[i].path, path) == 0) {
-            FileCache* result = &file_cache[i];
-            pthread_mutex_unlock(&cache_entry_mutexes[i]);
-            pthread_mutex_unlock(&cache_mutex);
-            return result;
+            if (file_cache[i].last_modified >= st.st_mtime) {
+                return &file_cache[i];
+            }
+            break;
         }
-        pthread_mutex_unlock(&cache_entry_mutexes[i]);
     }
-    
-    pthread_mutex_unlock(&cache_mutex);
     return NULL;
 }
 
 void cache_file(const char* path, const char* content, size_t size) {
-    if (!cache_initialized || !path || !content || size == 0) return;
-
-    pthread_mutex_lock(&cache_mutex);
+    if (!cache_initialized) return;
     
-    // Znajdź wolny slot lub LRU
-    int slot = -1;
+    int slot = 0;
     time_t oldest = time(NULL);
-    
     for (int i = 0; i < MAX_CACHE_SIZE; i++) {
-        pthread_mutex_lock(&file_cache[i].lock);
         if (!file_cache[i].path) {
             slot = i;
-            pthread_mutex_unlock(&file_cache[i].lock);
             break;
         }
-        
         if (file_cache[i].last_modified < oldest) {
             oldest = file_cache[i].last_modified;
             slot = i;
         }
-        pthread_mutex_unlock(&file_cache[i].lock);
     }
-
-    if (slot == -1) {
-        pthread_mutex_unlock(&cache_mutex);
-        return;
-    }
-
-    pthread_mutex_lock(&file_cache[slot].lock);
     
-    // Zwolnij stare dane
     if (file_cache[slot].path) {
         free(file_cache[slot].path);
-        file_cache[slot].path = NULL;
+        if (file_cache[slot].content) {
+            free(file_cache[slot].content);
+        }
     }
-    if (file_cache[slot].content) {
-        free(file_cache[slot].content);
-        file_cache[slot].content = NULL;
-    }
-
-    // Alokuj nowe dane
+    
     file_cache[slot].path = my_strdup(path);
     file_cache[slot].content = malloc(size);
-    
-    if (file_cache[slot].path && file_cache[slot].content) {
+    if (file_cache[slot].content) {
         memcpy(file_cache[slot].content, content, size);
-        file_cache[slot].size = size;
-        file_cache[slot].last_modified = time(NULL);
-    } else {
-        // Cleanup jeśli alokacja się nie powiodła
-        if (file_cache[slot].path) free(file_cache[slot].path);
-        if (file_cache[slot].content) free(file_cache[slot].content);
-        file_cache[slot].path = NULL;
-        file_cache[slot].content = NULL;
     }
-    
-    pthread_mutex_unlock(&file_cache[slot].lock);
-    pthread_mutex_unlock(&cache_mutex);
+    file_cache[slot].size = size;
+    file_cache[slot].last_modified = time(NULL);
 }
 
 void register_middleware(MiddlewareFunc func) {
@@ -228,69 +147,61 @@ HTTPRequest parse_request(const char* raw_request) {
     return req;
 }
 
-char* read_file_content(const char* path, size_t* out_size, const Config* config) {
-    if (!path) return NULL;
-
-    // Debug
+char* read_file_content(const char* path, size_t* out_size) {
     printf("DEBUG: Reading file: %s\n", path);
     
-    // Najpierw spróbuj z cache
-    if (config && config->cache_enabled) {
-        FileCache* cached = get_cached_file(path);
-        if (cached) {
-            pthread_mutex_lock(&cached->lock);
-            char* copy = malloc(cached->size);
-            if (copy) {
-                memcpy(copy, cached->content, cached->size);
-                if (out_size) *out_size = cached->size;
-                printf("DEBUG: Served from cache: %s (%zu bytes)\n", path, cached->size);
-            }
-            pthread_mutex_unlock(&cached->lock);
-            return copy;
-        }
+    FileCache* cached = get_cached_file(path);
+    if (cached) {
+        if (out_size) *out_size = cached->size;
+        printf("DEBUG: Serving from cache: %s (%zu bytes)\n", path, cached->size);
+        return my_strdup(cached->content);
     }
-
-    // Bezpośrednie czytanie z dysku
+    
     FILE* file = fopen(path, "rb");
     if (!file) {
-        printf("ERROR: Failed to open %s: %s\n", path, strerror(errno));
+        perror("fopen failed");
         return NULL;
     }
 
     if (fseek(file, 0, SEEK_END) != 0) {
+        perror("fseek failed");
         fclose(file);
         return NULL;
     }
-
+    
     long length = ftell(file);
     if (length < 0) {
+        perror("ftell failed");
         fclose(file);
         return NULL;
     }
-
+    
     rewind(file);
+
     char* buffer = malloc(length + 1);
     if (!buffer) {
+        perror("malloc failed");
         fclose(file);
         return NULL;
     }
 
     size_t read = fread(buffer, 1, length, file);
-    fclose(file);
-
-    if (read != (size_t)length) {
+    if (ferror(file)) {
+        perror("fread failed");
         free(buffer);
+        fclose(file);
         return NULL;
     }
 
-    if (out_size) *out_size = read;
-    
-    // Dodaj do cache jeśli włączony
-    if (config && config->cache_enabled) {
-        printf("DEBUG: Caching file: %s (%zu bytes)\n", path, read);
-        cache_file(path, buffer, read);
-    }
+    fclose(file);
 
+    if (out_size) {
+        *out_size = read;
+    }
+    
+    cache_file(path, buffer, read);
+    printf("DEBUG: Read %zu bytes from %s\n", read, path);
+    
     return buffer;
 }
 
@@ -436,54 +347,10 @@ HTTPResponse api_echo(HTTPRequest* request) {
     return response;
 }
 
-HTTPResponse handle_css_request(const char* path, const Config* config) {
-    HTTPResponse response = {0};
-    char full_path[2048];
-    
-    // Budowanie pełnej ścieżki
-    if (snprintf(full_path, sizeof(full_path), "%s%s", config->frontend_path, path) >= (int)sizeof(full_path)) {
-        return error_response(414, "Request URI too long");
-    }
-
-    // Debugowanie ścieżki
-    printf("DEBUG: CSS full path: %s\n", full_path);
-    
-    // Sprawdzenie istnienia pliku
-    if (access(full_path, R_OK) != 0) {
-        printf("ERROR: CSS file missing: %s (%s)\n", full_path, strerror(errno));
-        return error_response(404, "CSS file not found");
-    }
-
-    // Wczytanie zawartości
-    response.content = read_file_content(full_path, &response.content_size, config);
-    if (!response.content) {
-        return error_response(500, "Failed to read CSS file");
-    }
-
-    // Ustawienie nagłówków
-    response.status_code = 200;
-    strcpy(response.content_type, "text/css");
-    add_header(&response, "Cache-Control", "public, max-age=3600");
-    add_header(&response, "Content-Length", "");
-    
-    // Debugowanie zawartości
-    printf("DEBUG: Loaded CSS: %s (%zu bytes)\n", path, response.content_size);
-    
-    return response;
-}
-
 HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
     HTTPResponse response = {0};
     char decoded_path[1024] = {0};
     char file_path[2048] = {0};
-
-        log_message(LOG_ACCESS, "Request: %s %s from %s", 
-               request->method, request->path, 
-               request->ssl ? "HTTPS" : "HTTP");
-
-    if (strstr(request->path, ".css") != NULL) {
-         return handle_css_request(request->path, config);
-    }
     
     // 1. Normalizacja ścieżki
     strncpy(decoded_path, request->path, sizeof(decoded_path)-1);
@@ -519,7 +386,7 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
             return handle_wasm_file(file_path);
         }
         
-        response.content = read_file_content(file_path, &response.content_size, config);
+        response.content = read_file_content(file_path, &response.content_size);
         if (response.content) {
             response.status_code = 200;
             const char* mime_type = get_mime_type(file_path);
@@ -534,7 +401,7 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
         snprintf(file_path, sizeof(file_path), "%s%s", config->frontend_path, decoded_path);
         struct stat st;
         if (stat(file_path, &st) == 0 && S_ISREG(st.st_mode)) {
-            response.content = read_file_content(file_path, &response.content_size, config);
+            response.content = read_file_content(file_path, &response.content_size);
             if (response.content) {
                 response.status_code = 200;
                 strcpy(response.content_type, get_mime_type(file_path));
@@ -545,16 +412,11 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
 
     // 5. Domyślnie: index.html dla SPA
     snprintf(file_path, sizeof(file_path), "%s/index.html", config->frontend_path);
-    response.content = read_file_content(file_path, &response.content_size, config);
+    response.content = read_file_content(file_path, &response.content_size);
     if (response.content) {
         response.status_code = 200;
         strcpy(response.content_type, "text/html");
         return response;
-    }
-
-    if (response.status_code >= 400) {
-        log_message(LOG_ERROR, "Error %d for %s %s", 
-                   response.status_code, request->method, request->path);
     }
 
     return error_response(404, "File not found");
@@ -580,7 +442,7 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
           response->status_code, response->content_type, response->content_size);
 
     char headers[2048] = {0};
-    
+
     if (strcmp(response->content_type, "application/wasm") == 0) {
         snprintf(headers, sizeof(headers),
             "HTTP/1.1 %d OK\r\n"
@@ -592,15 +454,6 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
             "Connection: close\r\n\r\n",
             response->status_code,
             response->content_size);
-    } else if (strcmp(response->content_type, "text/css") == 0) {
-    snprintf(headers, sizeof(headers),
-        "HTTP/1.1 %d OK\r\n"
-        "Content-Type: text/css\r\n"
-        "Content-Length: %zu\r\n"
-        "Cache-Control: public, max-age=3600\r\n"
-        "Connection: close\r\n\r\n",
-        response->status_code,
-        response->content_size);
     } else {
         snprintf(headers, sizeof(headers),
             "HTTP/1.1 %d %s\r\n"
@@ -722,23 +575,5 @@ void free_response(HTTPResponse* response) {
             response->content = NULL;
         }
         response->content_size = 0;
-    }
-}
-
-void safe_write(int fd, const void* buf, size_t count) {
-    ssize_t bytes_written;
-    size_t total_written = 0;
-    const char* ptr = buf;
-    
-    while (total_written < count) {
-        bytes_written = write(fd, ptr + total_written, count - total_written);
-        if (bytes_written < 0) {
-            if (errno == EINTR) {
-                continue;  // Przerwij jeśli sygnał przerwał zapis
-            }
-            perror("write failed");
-            break;
-        }
-        total_written += bytes_written;
     }
 }

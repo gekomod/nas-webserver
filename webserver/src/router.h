@@ -6,10 +6,6 @@
 #include <stdlib.h>
 #include <openssl/ssl.h>
 
-// Dodaj te deklaracje:
-void safe_write(int fd, const void* buf, size_t count);
-void handle_http2_connection(int socket, SSL *ssl, const Config *config);
-
 typedef struct HTTPResponse HTTPResponse;
 typedef struct HTTPRequest HTTPRequest;
 
@@ -47,11 +43,7 @@ typedef struct {
     char* content;
     size_t size;
     time_t last_modified;
-    pthread_mutex_t lock;
 } FileCache;
-
-void cache_init();
-void cache_cleanup();
 
 void normalize_path(char* path);
 const char* get_mime_type(const char* filename);
@@ -64,7 +56,7 @@ HTTPRequest parse_request(const char* raw_request);
 HTTPResponse handle_request(const HTTPRequest* request, const Config* config);
 HTTPResponse handle_wasm_file(const char* file_path);
 char* build_response(const HTTPResponse* response, size_t* response_size, const Config* config);
-char* read_file_content(const char* path, size_t* out_size, const Config* config);
+char* read_file_content(const char* path, size_t* out_size);
 void url_decode(char* str);
 void free_response(HTTPResponse* response);
 void register_middleware(MiddlewareFunc func);
