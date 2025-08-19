@@ -33,6 +33,7 @@ typedef struct {
     int log_backup_count;
     
     // Performance
+    int threadpool_enabled;
     int max_threads;
     int max_connections;
     int connection_timeout;

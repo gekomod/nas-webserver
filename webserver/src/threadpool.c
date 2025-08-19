@@ -1,96 +1,80 @@
 #include "threadpool.h"
 #include <stdio.h>
-#include <errno.h>
+#include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
-// DODAJ globalny mutex dla debugowania
-static pthread_mutex_t debug_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void* threadpool_worker(void *arg) {
-    ThreadPool *pool = (ThreadPool *)arg;
+static void* threadpool_worker(void* threadpool) {
+    ThreadPool* pool = (ThreadPool*)threadpool;
     
-    pthread_mutex_lock(&debug_mutex);
-    printf("DEBUG: Thread %lu started\n", (unsigned long)pthread_self());
-    pthread_mutex_unlock(&debug_mutex);
-    
-    while (true) {
+    while (1) {
         pthread_mutex_lock(&(pool->lock));
         
-        // WAIT for tasks OR shutdown
-        while (pool->count == 0 && !pool->shutdown) {
+        // Wait for tasks or shutdown
+        while ((pool->count == 0) && (!pool->shutdown)) {
             pthread_cond_wait(&(pool->notify), &(pool->lock));
         }
         
-        // EXIT if shutdown and no tasks
-        if (pool->shutdown) {
-            pthread_mutex_unlock(&(pool->lock));
-            
-            pthread_mutex_lock(&debug_mutex);
-            printf("DEBUG: Thread %lu exiting (shutdown)\n", (unsigned long)pthread_self());
-            pthread_mutex_unlock(&debug_mutex);
-            
+        // Check for shutdown conditions
+        if (pool->shutdown == IMMEDIATE_SHUTDOWN) {
             break;
         }
         
-        // GET task from queue
-        Task task;
-        task.function = pool->queue[pool->head].function;
-        task.argument = pool->queue[pool->head].argument;
+        if ((pool->shutdown == GRACEFUL_SHUTDOWN) && (pool->count == 0)) {
+            break;
+        }
         
+        // Get task from queue
+        Task task = pool->queue[pool->head];
         pool->head = (pool->head + 1) % pool->queue_size;
         pool->count--;
         
         pthread_mutex_unlock(&(pool->lock));
         
-        // EXECUTE task (AFTER unlocking mutex!)
+        // Execute the task
         if (task.function && task.argument) {
-            pthread_mutex_lock(&debug_mutex);
-            printf("DEBUG: Thread %lu executing task\n", (unsigned long)pthread_self());
-            pthread_mutex_unlock(&debug_mutex);
-            
-            task.function(task.argument);
+            (*(task.function))(task.argument);
         }
     }
     
+    pool->started--;
+    pthread_mutex_unlock(&(pool->lock));
     pthread_exit(NULL);
+    return NULL;
 }
 
 ThreadPool* threadpool_create(int thread_count, int queue_size) {
-    pthread_mutex_lock(&debug_mutex);
-    printf("DEBUG: Creating threadpool with %d threads, %d queue\n", thread_count, queue_size);
-    pthread_mutex_unlock(&debug_mutex);
-    
-    if (thread_count <= 0 || thread_count > 1000 || 
-        queue_size <= 0 || queue_size > 100000) {
+    if (thread_count <= 0 || thread_count > MAX_THREADS || 
+        queue_size <= 0 || queue_size > MAX_QUEUE) {
         return NULL;
     }
     
-    ThreadPool *pool = (ThreadPool *)malloc(sizeof(ThreadPool));
-    if (!pool) return NULL;
-    memset(pool, 0, sizeof(ThreadPool));
-    
-    pool->queue = (Task *)malloc(sizeof(Task) * queue_size);
-    if (!pool->queue) {
-        free(pool);
+    ThreadPool* pool = (ThreadPool*)malloc(sizeof(ThreadPool));
+    if (!pool) {
         return NULL;
     }
-    memset(pool->queue, 0, sizeof(Task) * queue_size);
     
-    pool->threads = (pthread_t *)malloc(sizeof(pthread_t) * thread_count);
-    if (!pool->threads) {
-        free(pool->queue);
-        free(pool);
-        return NULL;
-    }
-    memset(pool->threads, 0, sizeof(pthread_t) * thread_count);
-    
-    pool->thread_count = thread_count;
+    // Initialize structure
+    pool->thread_count = 0;
     pool->queue_size = queue_size;
     pool->head = 0;
     pool->tail = 0;
     pool->count = 0;
     pool->shutdown = 0;
+    pool->started = 0;
     
+    // Allocate threads and queue
+    pool->threads = (pthread_t*)malloc(sizeof(pthread_t) * thread_count);
+    pool->queue = (Task*)malloc(sizeof(Task) * queue_size);
+    
+    if (!pool->threads || !pool->queue) {
+        if (pool->threads) free(pool->threads);
+        if (pool->queue) free(pool->queue);
+        free(pool);
+        return NULL;
+    }
+    
+    // Initialize mutex and condition variable
     if (pthread_mutex_init(&(pool->lock), NULL) != 0) {
         free(pool->threads);
         free(pool->queue);
@@ -108,12 +92,11 @@ ThreadPool* threadpool_create(int thread_count, int queue_size) {
     
     // Create worker threads
     for (int i = 0; i < thread_count; i++) {
-        if (pthread_create(&(pool->threads[i]), NULL, threadpool_worker, (void *)pool) != 0) {
-            // SHUTDOWN on error
-            pool->shutdown = 1;
+        if (pthread_create(&(pool->threads[i]), NULL, threadpool_worker, (void*)pool) != 0) {
+            // Destroy pool if thread creation fails
+            pool->shutdown = IMMEDIATE_SHUTDOWN;
             pthread_cond_broadcast(&(pool->notify));
             
-            // Wait for already created threads
             for (int j = 0; j < i; j++) {
                 pthread_join(pool->threads[j], NULL);
             }
@@ -125,69 +108,123 @@ ThreadPool* threadpool_create(int thread_count, int queue_size) {
             free(pool);
             return NULL;
         }
+        pool->thread_count++;
+        pool->started++;
     }
-    
-    pthread_mutex_lock(&debug_mutex);
-    printf("DEBUG: Threadpool created successfully\n");
-    pthread_mutex_unlock(&debug_mutex);
     
     return pool;
 }
 
-bool threadpool_add_task(ThreadPool *pool, void (*function)(void *), void *argument) {
-    if (!pool || !function) return false;
-    
-    pthread_mutex_lock(&(pool->lock));
-    
-    if (pool->shutdown) {
-        pthread_mutex_unlock(&(pool->lock));
-        return false;
+int threadpool_add(ThreadPool* pool, void (*function)(void*), void* argument) {
+    if (!pool || !function) {
+        return threadpool_invalid;
     }
     
-    if (pool->count == pool->queue_size) {
-        pthread_mutex_unlock(&(pool->lock));
-        return false;
+    if (pthread_mutex_lock(&(pool->lock)) != 0) {
+        return threadpool_lock_failure;
     }
     
-    // Add task to queue
-    pool->queue[pool->tail].function = function;
-    pool->queue[pool->tail].argument = argument;
-    pool->tail = (pool->tail + 1) % pool->queue_size;
-    pool->count++;
+    int next = (pool->tail + 1) % pool->queue_size;
+    int err = 0;
     
-    pthread_cond_signal(&(pool->notify));
-    pthread_mutex_unlock(&(pool->lock));
+    do {
+        // Check if queue is full
+        if (pool->count == pool->queue_size) {
+            err = threadpool_queue_full;
+            break;
+        }
+        
+        // Check if pool is shutting down
+        if (pool->shutdown) {
+            err = threadpool_shutdown;
+            break;
+        }
+        
+        // Add task to queue
+        pool->queue[pool->tail].function = function;
+        pool->queue[pool->tail].argument = argument;
+        pool->tail = next;
+        pool->count++;
+        
+        // Signal waiting thread
+        if (pthread_cond_signal(&(pool->notify)) != 0) {
+            err = threadpool_lock_failure;
+            break;
+        }
+    } while (0);
     
-    return true;
+    if (pthread_mutex_unlock(&pool->lock) != 0) {
+        err = threadpool_lock_failure;
+    }
+    
+    return err;
 }
 
-void threadpool_destroy(ThreadPool *pool) {
-    if (!pool) return;
-    
-    pthread_mutex_lock(&debug_mutex);
-    printf("DEBUG: Destroying threadpool\n");
-    pthread_mutex_unlock(&debug_mutex);
-    
-    pthread_mutex_lock(&(pool->lock));
-    pool->shutdown = 1;
-    pthread_mutex_unlock(&(pool->lock));
-    
-    // Wake up all threads
-    pthread_cond_broadcast(&(pool->notify));
-    
-    // Wait for all threads
-    for (int i = 0; i < pool->thread_count; i++) {
-        pthread_join(pool->threads[i], NULL);
+int threadpool_destroy(ThreadPool* pool, int flags) {
+    if (!pool) {
+        return threadpool_invalid;
     }
     
-    // Cleanup
+    if (pthread_mutex_lock(&(pool->lock)) != 0) {
+        return threadpool_lock_failure;
+    }
+    
+    int err = 0;
+    
+    do {
+        // Already shutting down
+        if (pool->shutdown) {
+            err = threadpool_shutdown;
+            break;
+        }
+        
+        pool->shutdown = (flags & threadpool_graceful) ? 
+            GRACEFUL_SHUTDOWN : IMMEDIATE_SHUTDOWN;
+        
+        // Wake up all worker threads
+        if (pthread_cond_broadcast(&(pool->notify)) != 0) {
+            err = threadpool_lock_failure;
+            break;
+        }
+        
+        if (pthread_mutex_unlock(&(pool->lock)) != 0) {
+            err = threadpool_lock_failure;
+            break;
+        }
+        
+        // Join all worker threads
+        for (int i = 0; i < pool->thread_count; i++) {
+            if (pthread_join(pool->threads[i], NULL) != 0) {
+                err = threadpool_thread_failure;
+            }
+        }
+    } while (0);
+    
+    // Cleanup if no error occurred
+    if (!err) {
+        threadpool_free(pool);
+    }
+    
+    return err;
+}
+
+void threadpool_free(ThreadPool* pool) {
+    if (!pool || pool->started > 0) {
+        return;
+    }
+    
+    // Free allocated resources
+    if (pool->threads) {
+        free(pool->threads);
+    }
+    
+    if (pool->queue) {
+        free(pool->queue);
+    }
+    
+    // Destroy synchronization primitives
     pthread_mutex_destroy(&(pool->lock));
     pthread_cond_destroy(&(pool->notify));
-    free(pool->threads);
-    free(pool->queue);
-    free(pool);
     
-    pthread_mutex_lock(&debug_mutex);
-    printf("DEBUG: Threadpool destroyed\n");
-    pthread_mutex_unlock(&debug_mutex);
+    free(pool);
 }

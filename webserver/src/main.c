@@ -12,12 +12,19 @@
 #include "error.h"
 #include "profiler.h"
 #include "http2.c"
+#include "threadpool.h"
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
 #endif
 
 #define BUFFER_SIZE 8192
+
+typedef struct {
+    int socket;
+    SSL *ssl;
+    Config *config;
+} ConnectionArgs;
 
 SSL_CTX* create_context() {
     const SSL_METHOD* method = TLS_server_method();
@@ -97,13 +104,67 @@ void safe_write(int fd, const void* buf, size_t count) {
     }
 }
 
+void handle_connection_wrapper(void *arg) {
+    ConnectionArgs *conn_args = (ConnectionArgs *)arg;
+    int socket = conn_args->socket;
+    SSL *ssl = conn_args->ssl;
+    Config *config = conn_args->config;
+    
+    char buffer[BUFFER_SIZE] = {0};
+    ssize_t bytes_read = read(socket, buffer, BUFFER_SIZE - 1);
+    
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0';
+        
+        HTTPRequest request = parse_request(buffer);
+        request.ssl = ssl;
+        
+        HTTPResponse response = handle_request(&request, config);
+        
+        size_t response_size = 0;
+        char* http_response = build_response(&response, &response_size, config);
+        
+        if (http_response) {
+            if (config->enable_https && ssl) {
+                SSL_write(ssl, http_response, response_size);
+            } else {
+                safe_write(socket, http_response, response_size);
+            }
+            free(http_response);
+        }
+        
+        free_response(&response);
+    }
+    
+    // Cleanup
+    if (config->enable_https && ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+    }
+    close(socket);
+    free(conn_args);
+}
+
 int main() {
     PROFILE_FUNCTION();
     Config config = load_config();
     init_cache();
 
     register_endpoint("/api/status", api_status);
-    register_endpoint("/api/status", api_echo);
+    register_endpoint("/api/echo", api_echo);  // Poprawione: api_echo zamiast api_status
+
+    // TWORZENIE THREADPOOL (na początku main)
+    ThreadPool* pool = NULL;
+    if (config.threadpool_enabled) {
+        pool = threadpool_create(config.max_threads, config.max_connections);
+        if (!pool) {
+            fprintf(stderr, "Failed to create thread pool, continuing without threadpool\n");
+            config.threadpool_enabled = 0;
+        } else {
+            printf("ThreadPool created with %d threads and %d queue size\n", 
+                   config.max_threads, config.max_connections);
+        }
+    }
 
     SSL_CTX* ctx = NULL;
     if (config.enable_https) {
@@ -130,7 +191,6 @@ int main() {
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
-    char buffer[BUFFER_SIZE] = {0};
 
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
@@ -189,60 +249,77 @@ int main() {
             }
         }
 
-        ssize_t bytes_read = read(new_socket, buffer, BUFFER_SIZE - 1);
-        if (bytes_read <= 0) {
-            if (bytes_read == 0) {
-                printf("Connection closed by client\n");
-            } else {
-                perror("read error");
+        if (config.threadpool_enabled && pool) {
+            ConnectionArgs *conn_args = malloc(sizeof(ConnectionArgs));
+            if (!conn_args) {
+                perror("malloc failed for connection args");
+                if (ssl) { SSL_shutdown(ssl); SSL_free(ssl); }
+                close(new_socket);
+                continue;
             }
-            if (config.enable_https) {
+            
+            conn_args->socket = new_socket;
+            conn_args->ssl = ssl;
+            conn_args->config = &config;
+            
+            if (threadpool_add(pool, handle_connection_wrapper, conn_args) != 0) {
+                fprintf(stderr, "Failed to add task to thread pool\n");
+                if (ssl) { SSL_shutdown(ssl); SSL_free(ssl); }
+                close(new_socket);
+                free(conn_args);
+            }
+        } else {
+            // OBSŁUGA BEZ THREADPOOL (oryginalny kod)
+            char buffer[BUFFER_SIZE] = {0};
+            ssize_t bytes_read = read(new_socket, buffer, BUFFER_SIZE - 1);
+            
+            if (bytes_read <= 0) {
+                if (bytes_read == 0) {
+                    printf("Connection closed by client\n");
+                } else {
+                    perror("read error");
+                }
+                if (config.enable_https && ssl) {
+                    SSL_shutdown(ssl);
+                    SSL_free(ssl);
+                }
+                close(new_socket);
+                continue;
+            }
+
+            buffer[bytes_read] = '\0';
+
+            HTTPRequest request = parse_request(buffer);
+            request.ssl = ssl;
+
+            HTTPResponse response = handle_request(&request, &config);
+
+            size_t response_size = 0;
+            char* http_response = build_response(&response, &response_size, &config);
+
+            if (http_response) {
+                if (config.enable_https && ssl) {
+                    SSL_write(ssl, http_response, response_size);
+                } else {
+                    safe_write(new_socket, http_response, response_size);
+                }
+                free(http_response);
+            }
+
+            free_response(&response);
+            if (config.enable_https && ssl) {
                 SSL_shutdown(ssl);
                 SSL_free(ssl);
             }
             close(new_socket);
-            continue;
         }
-
-        buffer[bytes_read] = '\0';
-
-        HTTPRequest request = parse_request(buffer);
-        request.ssl = ssl;
-
-        HTTPResponse response = handle_request(&request, &config);
-
-        size_t response_size = 0;
-        char* http_response = build_response(&response, &response_size, &config);
-
-        if (http_response) {
-            if (config.enable_https) {
-                SSL_write(ssl, http_response, response_size);
-            } else {
-                safe_write(new_socket, http_response, response_size);
-            }
-            free(http_response);
-        } else {
-            HTTPResponse error = error_response(500, "Internal Server Error");
-            char* error_resp = build_response(&error, &response_size, &config);
-            if (error_resp) {
-                if (config.enable_https) {
-                    SSL_write(ssl, error_resp, response_size);
-                } else {
-                    safe_write(new_socket, error_resp, response_size);
-                }
-                free(error_resp);
-            }
-            free_response(&error);
-        }
-
-        free_response(&response);
-        if (config.enable_https) {
-            SSL_shutdown(ssl);
-            SSL_free(ssl);
-        }
-        close(new_socket);
     }
 
+    // SPRZĄTANIE PRZY WYJŚCIU
+    if (config.threadpool_enabled && pool) {
+        threadpool_destroy(pool, 1);  // Graceful shutdown
+    }
+    
     if (config.enable_https) {
         SSL_CTX_free(ctx);
     }

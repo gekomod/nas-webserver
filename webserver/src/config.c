@@ -37,6 +37,7 @@ Config load_config() {
         .log_file = "/var/log/nas-web.log",
         .log_max_size = 10 * 1024 * 1024,
         .log_backup_count = 5,
+        .threadpool_enabled = 1,
         .max_threads = 10,
         .max_connections = 100,
         .connection_timeout = 30,
@@ -125,6 +126,9 @@ Config load_config() {
             else if (strcmp(key, "LOG_BACKUP_COUNT") == 0) {
                 int count = atoi(value);
                 if (count > 0) config.log_backup_count = count;
+            }
+            else if (strcmp(key, "THREADPOOL_ENABLED") == 0) {
+                config.threadpool_enabled = (strcasecmp(value, "true") == 0);
             }
             else if (strcmp(key, "MAX_THREADS") == 0) {
                 int threads = atoi(value);
