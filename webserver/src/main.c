@@ -13,6 +13,8 @@
 #include "profiler.h"
 #include "http2.c"
 #include "threadpool.h"
+#include "../security/isolation.h"
+#include "../security/monitoring.h"
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -148,10 +150,27 @@ void handle_connection_wrapper(void *arg) {
 int main() {
     PROFILE_FUNCTION();
     Config config = load_config();
+
+    monitoring_init(&config);
+
+    IsolationConfig isolation_config = {
+        .user_id = 1000,       // Użytkownik non-root
+        .group_id = 1000,
+        .chroot_path = "",     // Wyłączony chroot - problematyczny
+        .working_directory = "/tmp",
+        .no_new_privileges = 1,
+        .capabilities = 0      // Wyłączone - problematyczne
+    };
+    
+    
+    isolation_init(&isolation_config);
+
     init_cache();
 
     register_endpoint("/api/status", api_status);
-    register_endpoint("/api/echo", api_echo);  // Poprawione: api_echo zamiast api_status
+    register_endpoint("/api/echo", api_echo);
+
+    monitoring_init(&config);
 
     // TWORZENIE THREADPOOL (na początku main)
     ThreadPool* pool = NULL;
@@ -324,5 +343,6 @@ int main() {
         SSL_CTX_free(ctx);
     }
     free_cache();
+    monitoring_cleanup_old_logs();
     return 0;
 }

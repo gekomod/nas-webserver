@@ -1,0 +1,31 @@
+Format: 1.8
+Date: Wed, 18 Jun 2025 15:12:00 +0200
+Source: nas-web
+Binary: nas-web
+Built-For-Profiles: noudeb
+Architecture: amd64
+Version: 1.2.5
+Distribution: unstable
+Urgency: medium
+Maintainer: Your Name <your.email@example.com>
+Changed-By: Gekomod <zaba141@o2.pl>
+Description:
+ nas-web    - Lightweight web server for Vue.js applications
+Changes:
+ nas-web (1.2.5) unstable; urgency=medium
+ .
+   * Add support MultiThreads
+   * Fix cache
+   * Add Logging
+Checksums-Sha1:
+ 20f6501e299fa84e3bd3e6b8acc374333a24d3d7 51750 nas-web-dbgsym_1.2.5_amd64.ddeb
+ 681123e2d506d87498c015728535e11bc53da8ff 6421 nas-web_1.2.5_amd64.buildinfo
+ 01079e0b2722a90e03d483b5024c78fe035023f0 22656 nas-web_1.2.5_amd64.deb
+Checksums-Sha256:
+ de9b4afa50e66f4223b9692ce9455906ff2f32701bf1db1747a36afec20bc311 51750 nas-web-dbgsym_1.2.5_amd64.ddeb
+ f4d49d4381dc2f7b26f9f7d2f8b425330c4a46ca5635a063c0abab3010e304c8 6421 nas-web_1.2.5_amd64.buildinfo
+ 302756611d9f586446a143942bb10b4d27409ad44e877813ea1ec8514ef6b968 22656 nas-web_1.2.5_amd64.deb
+Files:
+ 5b3b8f71dbfb560711e6f40a85835e6e 51750 debug optional nas-web-dbgsym_1.2.5_amd64.ddeb
+ ef2ee255bd34f28327c5f4f8a636f795 6421 web optional nas-web_1.2.5_amd64.buildinfo
+ cfaa6c71d1b4569b7e38d90fb566a179 22656 web optional nas-web_1.2.5_amd64.deb

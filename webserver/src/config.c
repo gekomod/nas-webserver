@@ -47,8 +47,7 @@ Config load_config() {
         .http2_max_streams = 100,
         .http2_window_size = 65536,
         .access_log_path = "/var/log/nas-web/access.log",
-        .error_log_path = "/var/log/nas-web/error.log",
-        .security_log_path = "/var/log/nas-web/security.log"
+        .error_log_path = "/var/log/nas-web/error.log"
     };
 
     FILE *config_file = fopen("/etc/nas-web/nas-web.conf", "r");
@@ -56,6 +55,7 @@ Config load_config() {
         printf("Using default configuration\n");
         return config;
     }
+    
     char line[256];
     while (fgets(line, sizeof(line), config_file)) {
         // Skip comments and empty lines

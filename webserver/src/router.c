@@ -11,6 +11,7 @@
 #include "error.h"
 #include "profiler.h"
 #include "logging.h"
+#include "../security/monitoring.h"
 
 #define MAX_CACHE_SIZE 100
 #define MAX_MIDDLEWARES 10
@@ -387,6 +388,26 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
 
     if (is_path_traversal(decoded_path)) {
         log_message(LOG_SECURITY, "Path traversal attempt detected: %s", decoded_path);
+        return error_response(403, "Access denied");
+    }
+
+    if (detect_sql_injection(request->path) || 
+        detect_sql_injection(request->body)) {
+        log_security_event(SECURITY_HIGH, "SQL_INJECTION_ATTEMPT", 
+                          "unknown", request->path, 0, 400);
+        return error_response(400, "Invalid request");
+    }
+    
+    if (detect_xss_attempt(request->path) || 
+        detect_xss_attempt(request->body)) {
+        log_security_event(SECURITY_MEDIUM, "XSS_ATTEMPT", 
+                          "unknown", request->path, 0, 400);
+        return error_response(400, "Invalid request");
+    }
+    
+    if (detect_path_traversal(request->path)) {
+        log_security_event(SECURITY_HIGH, "PATH_TRAVERSAL_ATTEMPT", 
+                          "unknown", request->path, 0, 403);
         return error_response(403, "Access denied");
     }
     
