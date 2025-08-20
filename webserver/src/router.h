@@ -55,6 +55,7 @@ void enable_cors(HTTPResponse* response);
 HTTPRequest parse_request(const char* raw_request);
 HTTPResponse handle_request(const HTTPRequest* request, const Config* config);
 HTTPResponse handle_wasm_file(const char* file_path);
+void add_security_headers(HTTPResponse* response, const Config* config);
 char* build_response(const HTTPResponse* response, size_t* response_size, const Config* config);
 char* read_file_content(const char* path, size_t* out_size);
 void url_decode(char* str);

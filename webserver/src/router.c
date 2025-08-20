@@ -10,6 +10,7 @@
 #include "router.h"
 #include "error.h"
 #include "profiler.h"
+#include "logging.h"
 
 #define MAX_CACHE_SIZE 100
 #define MAX_MIDDLEWARES 10
@@ -24,6 +25,33 @@ int endpoint_count = 0;
 static int cache_initialized = 0;
 
 /* ========== FUNKCJE POMOCNICZE ========== */
+
+int is_path_traversal(const char* path) {
+    if (!path) return 1;
+    
+    int depth = 0;
+    const char* ptr = path;
+    
+    while (*ptr) {
+        if (strncmp(ptr, "../", 3) == 0) {
+            depth--;
+            ptr += 3;
+        } else if (strncmp(ptr, "./", 2) == 0) {
+            ptr += 2;
+        } else if (strncmp(ptr, "//", 2) == 0) {
+            ptr += 1;
+        } else if (*ptr == '/') {
+            depth++;
+            ptr++;
+        } else {
+            ptr++;
+        }
+        
+        if (depth < 0) return 1;
+    }
+    
+    return 0;
+}
 
 int hex_to_int(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -356,6 +384,11 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
     strncpy(decoded_path, request->path, sizeof(decoded_path)-1);
     url_decode(decoded_path);
     normalize_path(decoded_path);
+
+    if (is_path_traversal(decoded_path)) {
+        log_message(LOG_SECURITY, "Path traversal attempt detected: %s", decoded_path);
+        return error_response(403, "Access denied");
+    }
     
     printf("DEBUG: Handling path: '%s'\n", decoded_path); // Log diagnostyczny
 
@@ -443,6 +476,9 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
 
     char headers[2048] = {0};
 
+    HTTPResponse temp_response = *response;
+    add_security_headers(&temp_response, config);
+
     if (strcmp(response->content_type, "application/wasm") == 0) {
         snprintf(headers, sizeof(headers),
             "HTTP/1.1 %d OK\r\n"
@@ -452,8 +488,8 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
             "Cross-Origin-Embedder-Policy: require-corp\r\n"
             "Cache-Control: no-store\r\n"
             "Connection: close\r\n\r\n",
-            response->status_code,
-            response->content_size);
+            temp_response.status_code,
+            temp_response.content_size);
     } else {
         snprintf(headers, sizeof(headers),
             "HTTP/1.1 %d %s\r\n"
@@ -462,20 +498,20 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
             "%s"
             "Connection: close\r\n"
             "\r\n",
-            response->status_code,
+            temp_response.status_code,
             status_msg,
-            response->content_type,
-            response->content_size,
-            response->headers);
+            temp_response.content_type,
+            temp_response.content_size,
+            temp_response.headers);
     }
 
     size_t header_len = strlen(headers);
-    size_t total_size = header_len + response->content_size;
+    size_t total_size = header_len + temp_response.content_size;
     
     printf("DEBUG: Response headers (%zu bytes):\n%.*s\n", header_len, (int)header_len, headers);
     printf("DEBUG: First 100 bytes of content: %.*s\n",
-          (int)(response->content_size > 100 ? 100 : response->content_size),
-          response->content);
+          (int)(temp_response.content_size > 100 ? 100 : temp_response.content_size),
+          temp_response.content);
 
     char* http_response = malloc(total_size);
     if (!http_response) {
@@ -485,7 +521,7 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
     }
 
     memcpy(http_response, headers, header_len);
-    memcpy(http_response + header_len, response->content, response->content_size);
+    memcpy(http_response + header_len, temp_response.content, temp_response.content_size);
 
     if (response_size) {
         *response_size = total_size;
@@ -566,6 +602,30 @@ HTTPResponse handle_wasm_request(const char* file_path) {
     
     fclose(file);
     return response;
+}
+
+void add_security_headers(HTTPResponse* response, const Config* config) {
+    // HSTS - tylko dla HTTPS
+    if (config->enable_https && config->hsts_enabled) {
+        char hsts_header[50];
+        snprintf(hsts_header, sizeof(hsts_header), "max-age=%d", config->hsts_max_age);
+        add_header(response, "Strict-Transport-Security", hsts_header);
+    }
+    
+    // XSS Protection
+    add_header(response, "X-Content-Type-Options", "nosniff");
+    add_header(response, "X-Frame-Options", "DENY");
+    add_header(response, "X-XSS-Protection", "1; mode=block");
+    
+    // Content Security Policy
+    //add_header(response, "Content-Security-Policy", 
+    //    "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';");
+    
+    // Referrer Policy
+    add_header(response, "Referrer-Policy", "strict-origin-when-cross-origin");
+    
+    // Permissions Policy
+    add_header(response, "Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()");
 }
 
 void free_response(HTTPResponse* response) {
