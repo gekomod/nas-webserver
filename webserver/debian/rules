@@ -1,19 +1,62 @@
 #!/usr/bin/make -f
 
 %:
-	dh $@ --buildsystem=makefile
+	dh $@
+
+# Przykład konfiguracji dla małego projektu
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+override_dh_auto_configure:
+	# Tutaj ewentualne dodatkowe kroki konfiguracji
+	@echo "🔧 Configuring build..."
+
+override_dh_auto_build:
+	# Kompilacja projektu
+	$(MAKE)
+	@echo "🏗️  Building completed"
 
 override_dh_auto_install:
 	# Utwórz docelowe katalogi
 	install -d debian/nas-web/var/log/nas-web
-
 	install -d debian/nas-web/etc/nas-web
+	install -d debian/nas-web/usr/local/bin
+	install -d debian/nas-web/lib/systemd/system
 	
 	# Zainstaluj plik wykonywalny
 	cp -p dist/nas-web debian/nas-web/usr/local/bin/
+	@echo "📦 Binary installed"
 	
-	#install -m 644 debian/config/config.conf debian/nas-web/etc/nas-web/
 	# Zainstaluj usługę systemd
-	install -D -m 644 debian/nas-web.service debian/nas-web/lib/systemd/system/
+	install -m 644 debian/nas-web.service debian/nas-web/lib/systemd/system/
+	@echo "📋 Systemd service installed"
+	
+	# Sprawdź czy to upgrade czy nowa instalacja
+	if [ -f debian/upgrade-not-first-install ]; then \
+		echo "🔄 Upgrade installation - preserving existing config"; \
+	else \
+		echo "🆕 New installation - installing default config"; \
+		install -m 644 debian/config/nas-web.conf.default debian/nas-web/etc/nas-web/; \
+		echo "📄 Default config installed"; \
+	fi
 
 override_dh_usrlocal:
+
+# Nowoczesna obsługa systemd - zgodna z compat 13
+override_dh_installinit:
+	dh_installinit --no-start --no-enable
+	@echo "⏯️  Systemd service configured (not started/enabled by default)"
+
+# Czyszczenie podczas budowania nowego pakietu
+override_dh_clean:
+	dh_clean
+	rm -f debian/upgrade-not-first-install
+	@echo "🧹 Clean completed"
+
+# Skrypt preinst - wykonywany przed instalacją
+override_dh_installdeb:
+	dh_installdeb
+	# Utwórz plik do śledzenia upgradów
+	touch debian/upgrade-not-first-install
+	@echo "📝 Installation tracking setup"

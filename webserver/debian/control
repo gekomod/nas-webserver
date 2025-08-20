@@ -1,13 +1,23 @@
 Source: nas-web
 Section: web
 Priority: optional
-Maintainer: Your Name <your.email@example.com>
-Build-Depends: debhelper-compat (= 13), gcc, make, libssl-dev
-Standards-Version: 4.5.1
+Maintainer: Gekomod <zaba141@o2.pl>
+Build-Depends: debhelper-compat (= 13), libssl-dev, libz-dev
+Standards-Version: 4.6.0
+Homepage: https://github.com/gekomod/nas-webserver
+Vcs-Browser: https://github.com/gekomod/nas-webserver
+Vcs-Git: https://github.com/gekomod/nas-webserver.git
 
 Package: nas-web
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, libc6 (>= 2.28)
-Description: Lightweight web server for Vue.js applications
- NAS-WEB is a custom web server designed to serve Vue.js applications
- with integrated backend API support.
+Depends: ${shlibs:Depends}, ${misc:Depends}, libssl3, zlib1g
+Description: Lightweight NAS web interface
+ A fast and secure web interface for NAS management with modern features
+ including HTTPS support, API endpoints, and real-time monitoring.
+ .
+ Features:
+  * Secure HTTPS support with modern ciphers
+  * RESTful API for integration
+  * Real-time system monitoring
+  * Thread pool for high performance
+  * Comprehensive security features

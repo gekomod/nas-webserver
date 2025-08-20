@@ -7,10 +7,10 @@ Architecture: amd64
 Version: 1.2.5
 Distribution: unstable
 Urgency: medium
-Maintainer: Your Name <your.email@example.com>
+Maintainer: Gekomod <zaba141@o2.pl>
 Changed-By: Gekomod <zaba141@o2.pl>
 Description:
- nas-web    - Lightweight web server for Vue.js applications
+ nas-web    - Lightweight NAS web interface
 Changes:
  nas-web (1.2.5) unstable; urgency=medium
  .
@@ -18,14 +18,14 @@ Changes:
    * Fix cache
    * Add Logging
 Checksums-Sha1:
- 20f6501e299fa84e3bd3e6b8acc374333a24d3d7 51750 nas-web-dbgsym_1.2.5_amd64.ddeb
- 681123e2d506d87498c015728535e11bc53da8ff 6421 nas-web_1.2.5_amd64.buildinfo
- 01079e0b2722a90e03d483b5024c78fe035023f0 22656 nas-web_1.2.5_amd64.deb
+ 92d23971e6368a0731fd30b91ee79cb972f6e696 51742 nas-web-dbgsym_1.2.5_amd64.ddeb
+ 4bc600e907d98caf2965dd5195de5359d520e5d4 6360 nas-web_1.2.5_amd64.buildinfo
+ 1bab11c27364475a00fb396559a7bfb1d75ffc3c 23500 nas-web_1.2.5_amd64.deb
 Checksums-Sha256:
- de9b4afa50e66f4223b9692ce9455906ff2f32701bf1db1747a36afec20bc311 51750 nas-web-dbgsym_1.2.5_amd64.ddeb
- f4d49d4381dc2f7b26f9f7d2f8b425330c4a46ca5635a063c0abab3010e304c8 6421 nas-web_1.2.5_amd64.buildinfo
- 302756611d9f586446a143942bb10b4d27409ad44e877813ea1ec8514ef6b968 22656 nas-web_1.2.5_amd64.deb
+ 0fa532b0cd1869e34cb823128449715e71aa3087f13c5e9c04804ee6cea69d6a 51742 nas-web-dbgsym_1.2.5_amd64.ddeb
+ 9e04d3c6ddf01aa8820795e8316773319977851a2b183bee103fc9e2084273a4 6360 nas-web_1.2.5_amd64.buildinfo
+ 0b4fc96d51e1042948a03770e1ac19596ce434d7ca7e3069e7202a65be0db896 23500 nas-web_1.2.5_amd64.deb
 Files:
- 5b3b8f71dbfb560711e6f40a85835e6e 51750 debug optional nas-web-dbgsym_1.2.5_amd64.ddeb
- ef2ee255bd34f28327c5f4f8a636f795 6421 web optional nas-web_1.2.5_amd64.buildinfo
- cfaa6c71d1b4569b7e38d90fb566a179 22656 web optional nas-web_1.2.5_amd64.deb
+ e30931728927723b1aaa2849e7ce6b42 51742 debug optional nas-web-dbgsym_1.2.5_amd64.ddeb
+ d511767642ea8915a26a35ca9a0b35d6 6360 web optional nas-web_1.2.5_amd64.buildinfo
+ efb6ad2f61d50d11d90fb9e35876c52f 23500 web optional nas-web_1.2.5_amd64.deb

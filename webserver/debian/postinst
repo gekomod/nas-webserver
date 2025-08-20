@@ -5,6 +5,37 @@ mkdir -p /var/log/nas-web
 chown root:root /var/log/nas-web
 chmod 755 /var/log/nas-web
 
+USERNAME="nasweb"
+GROUPNAME="nasweb"
+HOMEDIR="/var/empty"
+
+echo "🔧 Creating dedicated user for NAS Web Server"
+
+# Sprawdź czy użytkownik już istnieje
+if id "$USERNAME" &>/dev/null; then
+    echo "User $USERNAME already exists"
+    exit 0
+fi
+
+# Utwórz grupę
+if ! getent group "$GROUPNAME" >/dev/null; then
+    groupadd -r "$GROUPNAME"
+    echo "Created group: $GROUPNAME"
+fi
+
+# Utwórz użytkownika
+useradd -r -s /bin/false -d "$HOMEDIR" -g "$GROUPNAME" "$USERNAME"
+echo "Created user: $USERNAME"
+
+# Utwórz secure directory
+mkdir -p "$HOMEDIR"
+chown root:root "$HOMEDIR"
+chmod 755 "$HOMEDIR"
+
+echo "✅ Security user setup complete"
+echo "   User: $USERNAME ($(id -u $USERNAME))"
+echo "   Group: $GROUPNAME ($(getent group $GROUPNAME | cut -d: -f3))"
+
 # Reload systemd
 systemctl daemon-reload
 

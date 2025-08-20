@@ -1,0 +1,66 @@
+#!/bin/sh
+# Script run after installation/upgrade
+
+set -e
+
+case "$1" in
+    configure)
+        echo "🔧 Configuring NAS Web Server..."
+        
+        # Sprawdź czy to pierwsza instalacja
+        if [ -z "$2" ]; then
+            echo "🆕 First installation detected"
+            
+            # Utwórz użytkownika i grupę
+            if ! getent group nasweb >/dev/null; then
+                addgroup --system nasweb
+                echo "👥 Created nasweb group"
+            fi
+            
+            if ! id nasweb >/dev/null 2>&1; then
+                adduser --system --no-create-home --home /var/empty \
+                        --shell /bin/false --ingroup nasweb nasweb
+                echo "👤 Created nasweb user"
+            fi
+            
+            # Jeśli istnieje domyślna konfiguracja, ale nie ma głównej
+            if [ -f /etc/nas-web/nas-web.conf.default ] && [ ! -f /etc/nas-web/nas-web.conf ]; then
+                cp /etc/nas-web/nas-web.conf.default /etc/nas-web/nas-web.conf
+                echo "📄 Created initial configuration"
+            fi
+            
+        else
+            echo "🔄 Upgrade from version $2 detected"
+            
+            # Zachowaj istniejącą konfigurację podczas upgradów
+            if [ -f /etc/nas-web/nas-web.conf ] && [ -f /etc/nas-web/nas-web.conf.default ]; then
+                # Zachowaj tylko jeśli plik konfiguracyjny nie został zmodyfikowany
+                if ! cmp -s /etc/nas-web/nas-web.conf /etc/nas-web/nas-web.conf.default; then
+                    echo "📋 Preserving existing configuration (different from default)"
+                else
+                    echo "📋 Using default configuration"
+                fi
+            fi
+
+            # Jeśli istnieje domyślna konfiguracja, ale nie ma głównej
+            if [ -f /etc/nas-web/nas-web.conf.default ] && [ ! -f /etc/nas-web/nas-web.conf ]; then
+                cp /etc/nas-web/nas-web.conf.default /etc/nas-web/nas-web.conf
+                echo "📄 Created initial configuration"
+            fi
+        fi
+        
+        # Ustaw prawa własności
+        if [ -d /var/log/nas-web ]; then
+            chown -R nasweb:nasweb /var/log/nas-web
+            chmod 755 /var/log/nas-web
+        fi
+        
+        echo "✅ Configuration completed"
+        ;;
+        
+    abort-upgrade|abort-remove|abort-deconfigure)
+        echo "❌ Installation aborted"
+        ;;
+esac
+
+exit 0

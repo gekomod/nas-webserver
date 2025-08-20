@@ -1,0 +1,22 @@
+#!/bin/sh
+# Script run before removal/upgrade
+
+set -e
+
+case "$1" in
+    remove|upgrade)
+        # Stop the service before removal/upgrade
+        if systemctl is-active --quiet nas-web; then
+            echo "⏹️  Stopping NAS Web Server"
+            systemctl stop nas-web || true
+        fi
+        
+        if [ "$1" = "remove" ]; then
+            echo "🗑️  Removing NAS Web Server"
+        else
+            echo "🔄 Preparing for upgrade"
+        fi
+        ;;
+esac
+
+exit 0

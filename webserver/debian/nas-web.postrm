@@ -1,0 +1,34 @@
+#!/bin/sh
+# Script run after removal
+
+set -e
+
+case "$1" in
+    purge)
+        # Usuń pliki konfiguracyjne tylko przy purge
+        echo "🧹 Purging configuration files"
+        rm -rf /etc/nas-web/ /var/log/nas-web/
+        
+        # Usuń użytkownika jeśli nie jest używany
+        if id nasweb >/dev/null 2>&1; then
+            if ! ps -u nasweb >/dev/null; then
+                userdel nasweb 2>/dev/null || true
+                echo "👤 Removed nasweb user"
+            fi
+        fi
+        
+        if getent group nasweb >/dev/null; then
+            if ! getent passwd | grep -q ":.*:.*:.*:nasweb"; then
+                groupdel nasweb 2>/dev/null || true
+                echo "👥 Removed nasweb group"
+            fi
+        fi
+        ;;
+        
+    remove)
+        # Zachowaj pliki konfiguracyjne przy remove
+        echo "📋 Configuration files preserved (use 'purge' to remove)"
+        ;;
+esac
+
+exit 0

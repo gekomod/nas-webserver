@@ -4,7 +4,7 @@ Source: nas-web
 Version: 1.2.5
 Auto-Built-Package: debug-symbols
 Architecture: amd64
-Maintainer: Your Name <your.email@example.com>
+Maintainer: Gekomod <zaba141@o2.pl>
 Installed-Size: 70
 Depends: nas-web (= 1.2.5)
 Section: debug
