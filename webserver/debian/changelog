@@ -1,3 +1,25 @@
+nas-web (1.2.8) unstable; urgency=medium
+
+  * Fix Update
+  *
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
+nas-web (1.2.7) unstable; urgency=medium
+
+  * Add benchmark
+  * 
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
+nas-web (1.2.6) unstable; urgency=medium
+
+  * Rebuild Install Script
+  * Add Secure
+  * Add More Logging
+
+ -- Gekomod <zaba141@o2.pl>  Wed, 20 Jun 2025 18:20:00 +0200
+
 nas-web (1.2.5) unstable; urgency=medium
 
   * Add support MultiThreads

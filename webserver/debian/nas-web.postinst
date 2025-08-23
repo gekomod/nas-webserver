@@ -31,6 +31,18 @@ case "$1" in
             
         else
             echo "🔄 Upgrade from version $2 detected"
+
+            # Utwórz użytkownika i grupę
+            if ! getent group nasweb >/dev/null; then
+                addgroup --system nasweb
+                echo "👥 Created nasweb group"
+            fi
+
+            if ! id nasweb >/dev/null 2>&1; then
+                adduser --system --no-create-home --home /var/empty \
+                        --shell /bin/false --ingroup nasweb nasweb
+                echo "👤 Created nasweb user"
+            fi
             
             # Zachowaj istniejącą konfigurację podczas upgradów
             if [ -f /etc/nas-web/nas-web.conf ] && [ -f /etc/nas-web/nas-web.conf.default ]; then
@@ -54,6 +66,8 @@ case "$1" in
             chown -R nasweb:nasweb /var/log/nas-web
             chmod 755 /var/log/nas-web
         fi
+
+        systemctl start nas-web
         
         echo "✅ Configuration completed"
         ;;
