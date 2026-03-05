@@ -27,6 +27,9 @@ LOG_LEVEL=info        # debug, info, warning, error
 LOG_FILE=/var/log/nas-web.log
 LOG_MAX_SIZE=10       # in MB
 LOG_BACKUP_COUNT=5    # number of rotated logs to keep
+ACCESS_LOG_PATH=/var/log/nas-web/access.log
+ERROR_LOG_PATH=/var/log/nas-web/error.log
+SECURITY_LOG_PATH=/var/log/nas-web/security.log
 
 # Performance
 THREADPOOL_ENABLED=true

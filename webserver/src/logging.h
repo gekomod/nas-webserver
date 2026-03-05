@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 typedef enum {
     LOG_ACCESS,

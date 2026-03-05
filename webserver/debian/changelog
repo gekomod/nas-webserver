@@ -1,3 +1,70 @@
+nas-web (1.2.14) unstable; urgency=high
+
+  * [Poprawka] Krytyczny błąd cache: funkcja read_file_content zwracała
+    my_strdup(cached->content) co obcinało pliki CSS/JS przy pierwszym \0
+    w danych; zastąpiono binary-safe memdup(cached->content, cached->size)
+    – to była główna przyczyna błędu "Unable to preload CSS for /assets/css/..."
+  * [Poprawka] Nagłówki CORS dla assetów: dodano Access-Control-Allow-Origin: *
+    oraz Vary: Accept-Encoding dla wszystkich plików z /assets/ i /static/;
+    brak tych nagłówków blokował modulepreload z atrybutem crossorigin
+  * [Poprawka] Cache-Control dla assetów Vite: dodano
+    "public, max-age=31536000, immutable" – pliki z hashem w nazwie mogą być
+    cache'owane przez przeglądarkę przez rok
+  * [Poprawka] Przepełnienie bufora nagłówków HTTPResponse: zwiększono
+    headers[1024] do headers[4096] w strukturze HTTPResponse (router.h);
+    security headers + CORS + Cache-Control + Content-Length przepełniały
+    bufor co cicho obcinało nagłówek Content-Type
+  * [Poprawka] Lokalny bufor w build_response zwiększony z 4096 do 8192 bajtów
+    aby pomieścić wszystkie nagłówki przy budowaniu pełnej odpowiedzi HTTP
+  * [Poprawka] Parser konfiguracji (config.c): inline komentarze po wartości
+    (np. CACHE_MAX_SIZE=100  # in MB) były niepoprawnie dołączane do wartości;
+    dodano strip komentarzy (#...) i whitespace z wartości konfiguracyjnych
+  * [Poprawka] Parser konfiguracji: cudzysłowy w wartościach (CHROOT_PATH="")
+    były pozostawiane w stringu; dodano ich usuwanie
+  * [Poprawka] Parser konfiguracji: zmieniono sscanf "%[^=]=%s" na
+    "%49[^=]=%199s" aby uniknąć potencjalnego przepełnienia bufora key/value
+  * [Poprawka] add_header: zwiększono lokalny bufor z 512 do 1024 bajtów
+    dla obsługi długich wartości nagłówków (np. Content-Security-Policy)
+  * [Dodano] Nowa funkcja pomocnicza memdup() – binary-safe kopia pamięci
+    używana zamiast my_strdup() dla danych binarnych i plików tekstowych
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 05 Mar 2026 12:00:00 +0100
+
+nas-web (1.2.13) unstable; urgency=medium
+
+  * Fix Error Logs
+  *
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
+nas-web (1.2.12) unstable; urgency=medium
+
+  * Fix Error Restart Connection
+  *
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
+nas-web (1.2.11) unstable; urgency=medium
+
+  * Fix auto start add api
+  *
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
+nas-web (1.2.10) unstable; urgency=medium
+
+  * Fix auto start
+  *
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
+nas-web (1.2.9) unstable; urgency=medium
+
+  * Fix auto start
+  *
+
+ -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+
 nas-web (1.2.8) unstable; urgency=medium
 
   * Fix Update

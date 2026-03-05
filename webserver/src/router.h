@@ -26,12 +26,11 @@ typedef struct HTTPResponse {
     unsigned char is_binary;
     unsigned char is_wasm;
     unsigned char skip_compression;
-    char headers[1024];
+    char headers[4096];   /* zwiększono z 1024 - security + CORS + Cache headers mogły przepełnić bufor */
 } HTTPResponse;
 
 typedef HTTPResponse (*MiddlewareFunc)(HTTPRequest*);
 typedef HTTPResponse (*ApiHandler)(HTTPRequest*);
-
 
 typedef struct {
     char* path;
@@ -45,6 +44,7 @@ typedef struct {
     time_t last_modified;
 } FileCache;
 
+// Deklaracje funkcji
 void normalize_path(char* path);
 const char* get_mime_type(const char* filename);
 char* my_strdup(const char* s);
@@ -64,9 +64,18 @@ void register_middleware(MiddlewareFunc func);
 void register_endpoint(const char* path, ApiHandler handler);
 void init_cache();
 void free_cache();
+void init_api_routes();
 extern int endpoint_count;
+extern time_t server_start_time;
 
+// Deklaracje endpointów API
 HTTPResponse api_status(HTTPRequest* request); 
 HTTPResponse api_echo(HTTPRequest* request);
+HTTPResponse api_health(HTTPRequest* request);
+HTTPResponse api_heartbeat(HTTPRequest* request);
+HTTPResponse api_auth_check(HTTPRequest* request);
+HTTPResponse api_ping(HTTPRequest* request);
+HTTPResponse api_system_boot_time(HTTPRequest* request);
+HTTPResponse api_system_health(HTTPRequest* request);
 
 #endif

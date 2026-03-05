@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 
 static void* threadpool_worker(void* threadpool) {
     ThreadPool* pool = (ThreadPool*)threadpool;
@@ -10,36 +11,51 @@ static void* threadpool_worker(void* threadpool) {
     while (1) {
         pthread_mutex_lock(&(pool->lock));
         
-        // Wait for tasks or shutdown
+        // Sprawdź shutdown przed czekaniem
+        if (pool->shutdown) {
+            pool->started--;
+            pthread_mutex_unlock(&(pool->lock));
+            pthread_exit(NULL);
+        }
+        
+        // Wait for tasks or shutdown z timeoutem
         while ((pool->count == 0) && (!pool->shutdown)) {
-            pthread_cond_wait(&(pool->notify), &(pool->lock));
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 5; // 5 sekund timeout
+            
+            int ret = pthread_cond_timedwait(&(pool->notify), &(pool->lock), &ts);
+            if (ret == ETIMEDOUT && pool->count == 0 && !pool->shutdown) {
+                // Sprawdź ponownie warunki
+                continue;
+            }
+            break;
         }
         
         // Check for shutdown conditions
-        if (pool->shutdown == IMMEDIATE_SHUTDOWN) {
-            break;
-        }
-        
-        if ((pool->shutdown == GRACEFUL_SHUTDOWN) && (pool->count == 0)) {
-            break;
+        if (pool->shutdown) {
+            pool->started--;
+            pthread_mutex_unlock(&(pool->lock));
+            pthread_exit(NULL);
         }
         
         // Get task from queue
-        Task task = pool->queue[pool->head];
-        pool->head = (pool->head + 1) % pool->queue_size;
-        pool->count--;
-        
-        pthread_mutex_unlock(&(pool->lock));
-        
-        // Execute the task
-        if (task.function && task.argument) {
-            (*(task.function))(task.argument);
+        if (pool->count > 0) {
+            Task task = pool->queue[pool->head];
+            pool->head = (pool->head + 1) % pool->queue_size;
+            pool->count--;
+            
+            pthread_mutex_unlock(&(pool->lock));
+            
+            // Execute the task
+            if (task.function) {
+                task.function(task.argument);
+            }
+        } else {
+            pthread_mutex_unlock(&(pool->lock));
         }
     }
     
-    pool->started--;
-    pthread_mutex_unlock(&(pool->lock));
-    pthread_exit(NULL);
     return NULL;
 }
 
@@ -55,6 +71,7 @@ ThreadPool* threadpool_create(int thread_count, int queue_size) {
     }
     
     // Initialize structure
+    memset(pool, 0, sizeof(ThreadPool));
     pool->thread_count = 0;
     pool->queue_size = queue_size;
     pool->head = 0;
@@ -73,6 +90,9 @@ ThreadPool* threadpool_create(int thread_count, int queue_size) {
         free(pool);
         return NULL;
     }
+    
+    memset(pool->threads, 0, sizeof(pthread_t) * thread_count);
+    memset(pool->queue, 0, sizeof(Task) * queue_size);
     
     // Initialize mutex and condition variable
     if (pthread_mutex_init(&(pool->lock), NULL) != 0) {
@@ -187,18 +207,23 @@ int threadpool_destroy(ThreadPool* pool, int flags) {
             break;
         }
         
-        if (pthread_mutex_unlock(&(pool->lock)) != 0) {
-            err = threadpool_lock_failure;
-            break;
-        }
+        pthread_mutex_unlock(&(pool->lock));
         
         // Join all worker threads
         for (int i = 0; i < pool->thread_count; i++) {
-            if (pthread_join(pool->threads[i], NULL) != 0) {
-                err = threadpool_thread_failure;
+            if (pool->threads[i] != 0) {
+                if (pthread_join(pool->threads[i], NULL) != 0) {
+                    err = threadpool_thread_failure;
+                }
             }
         }
+        
+        // Lock again for cleanup
+        pthread_mutex_lock(&(pool->lock));
+        
     } while (0);
+    
+    pthread_mutex_unlock(&(pool->lock));
     
     // Cleanup if no error occurred
     if (!err) {
@@ -209,17 +234,19 @@ int threadpool_destroy(ThreadPool* pool, int flags) {
 }
 
 void threadpool_free(ThreadPool* pool) {
-    if (!pool || pool->started > 0) {
+    if (!pool) {
         return;
     }
     
     // Free allocated resources
     if (pool->threads) {
         free(pool->threads);
+        pool->threads = NULL;
     }
     
     if (pool->queue) {
         free(pool->queue);
+        pool->queue = NULL;
     }
     
     // Destroy synchronization primitives

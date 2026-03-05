@@ -26,10 +26,21 @@ static int create_log_path(char* path, size_t size, const char* base, int suffix
 void init_logging(const Config* config) {
     // Create log directories if they don't exist
     char access_dir[PATH_MAX], error_dir[PATH_MAX], security_dir[PATH_MAX];
-    char* a_dir = dirname(strncpy(access_dir, config->access_log_path, sizeof(access_dir)));
-    char* e_dir = dirname(strncpy(error_dir, config->error_log_path, sizeof(error_dir)));
-    char* s_dir = dirname(strncpy(security_dir, config->security_log_path, sizeof(security_dir)));
     
+    // Poprawione kopiowanie ścieżek
+    strncpy(access_dir, config->access_log_path, sizeof(access_dir));
+    access_dir[sizeof(access_dir)-1] = '\0';
+    char* a_dir = dirname(access_dir);
+    
+    strncpy(error_dir, config->error_log_path, sizeof(error_dir));
+    error_dir[sizeof(error_dir)-1] = '\0';
+    char* e_dir = dirname(error_dir);
+    
+    strncpy(security_dir, config->security_log_path, sizeof(security_dir));
+    security_dir[sizeof(security_dir)-1] = '\0';
+    char* s_dir = dirname(security_dir);
+    
+    // Tworzenie katalogów (reszta bez zmian)
     if (mkdir(a_dir, 0755) == -1 && errno != EEXIST) {
         perror("Failed to create access log directory");
         exit(EXIT_FAILURE);
@@ -45,7 +56,7 @@ void init_logging(const Config* config) {
         exit(EXIT_FAILURE);
     }
     
-    // Open log files
+    // Open log files (reszta bez zmian)
     if (!(access_log = fopen(config->access_log_path, "a"))) {
         perror("Failed to open access log");
         exit(EXIT_FAILURE);

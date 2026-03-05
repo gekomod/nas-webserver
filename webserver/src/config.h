@@ -49,6 +49,7 @@ typedef struct {
     char access_log_path[256];
     char error_log_path[256];
     char security_log_path[256];
+    
 } Config;
 
 Config load_config();

@@ -47,7 +47,8 @@ Config load_config() {
         .http2_max_streams = 100,
         .http2_window_size = 65536,
         .access_log_path = "/var/log/nas-web/access.log",
-        .error_log_path = "/var/log/nas-web/error.log"
+        .error_log_path = "/var/log/nas-web/error.log",
+        .security_log_path = "/var/log/nas-web/security.log"
     };
 
     FILE *config_file = fopen("/etc/nas-web/nas-web.conf", "r");
@@ -62,7 +63,25 @@ Config load_config() {
         if (line[0] == '#' || line[0] == '\n') continue;
         
         char key[50], value[200];
-        if (sscanf(line, "%[^=]=%s", key, value) == 2) {
+        if (sscanf(line, "%49[^=]=%199s", key, value) == 2) {
+            /* Usuń białe znaki z klucza */
+            char* kp = key + strlen(key) - 1;
+            while (kp > key && (*kp == ' ' || *kp == '\t')) { *kp-- = '\0'; }
+
+            /* Usuń inline komentarze z wartości: "100  # in MB" -> "100" */
+            char* comment = strchr(value, '#');
+            if (comment) { *comment = '\0'; }
+            /* Usuń trailing whitespace z wartości */
+            char* vp = value + strlen(value) - 1;
+            while (vp > value && (*vp == ' ' || *vp == '\t' || *vp == '\r' || *vp == '\n')) { *vp-- = '\0'; }
+            /* Usuń cudzysłowy z wartości: CHROOT_PATH="" -> CHROOT_PATH= */
+            if (value[0] == '"') {
+                size_t vlen = strlen(value);
+                if (vlen >= 2 && value[vlen-1] == '"') {
+                    memmove(value, value+1, vlen-2);
+                    value[vlen-2] = '\0';
+                }
+            }
             if (strcmp(key, "PORT") == 0) {
                 int port = atoi(value);
                 if (port > 0 && port <= 65535) config.port = port;
@@ -141,6 +160,9 @@ Config load_config() {
             else if (strcmp(key, "CONNECTION_TIMEOUT") == 0) {
                 int timeout = atoi(value);
                 if (timeout > 0) config.connection_timeout = timeout;
+            }
+            else if (strcmp(key, "SECURITY_LOG_PATH") == 0) {  // ← DODAJ TEN BLOK
+                safe_strcpy(config.security_log_path, value, sizeof(config.security_log_path)-1);
             }
         }
     }

@@ -28,6 +28,9 @@ case "$1" in
                 cp /etc/nas-web/nas-web.conf.default /etc/nas-web/nas-web.conf
                 echo "📄 Created initial configuration"
             fi
+
+            systemctl enable nas-web.service || true
+            systemctl start nas-web.service || true
             
         else
             echo "🔄 Upgrade from version $2 detected"
@@ -67,8 +70,9 @@ case "$1" in
             chmod 755 /var/log/nas-web
         fi
 
-        systemctl start nas-web
-        
+        systemctl enable nas-web.service || true
+        systemctl restart nas-web.service || true
+
         echo "✅ Configuration completed"
         ;;
         

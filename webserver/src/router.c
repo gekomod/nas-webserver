@@ -15,15 +15,18 @@
 
 #define MAX_CACHE_SIZE 100
 #define MAX_MIDDLEWARES 10
-#define MAX_ENDPOINTS 20
+#define MAX_ENDPOINTS 50
 #define DEFAULT_MIME_TYPE "application/octet-stream"
+#define API_PREFIX "/api"
 
+// Zmienne statyczne
 static FileCache file_cache[MAX_CACHE_SIZE];
 static MiddlewareFunc middlewares[MAX_MIDDLEWARES];
 static ApiEndpoint api_endpoints[MAX_ENDPOINTS];
 static int middleware_count = 0;
 int endpoint_count = 0;
 static int cache_initialized = 0;
+time_t server_start_time = 0;
 
 /* ========== FUNKCJE POMOCNICZE ========== */
 
@@ -69,10 +72,19 @@ char* my_strdup(const char* s) {
     return new;
 }
 
+/* Binary-safe memdup - używaj zamiast my_strdup dla plików binarnych/CSS/JS */
+static char* memdup(const char* src, size_t size) {
+    if (!src || size == 0) return NULL;
+    char* dst = malloc(size);
+    if (dst) memcpy(dst, src, size);
+    return dst;
+}
+
 void init_cache() {
     if (!cache_initialized) {
         memset(file_cache, 0, sizeof(file_cache));
         cache_initialized = 1;
+        printf("Cache initialized\n");
     }
 }
 
@@ -86,6 +98,7 @@ void free_cache() {
         }
     }
     cache_initialized = 0;
+    printf("Cache freed\n");
 }
 
 FileCache* get_cached_file(const char* path) {
@@ -145,9 +158,31 @@ void register_middleware(MiddlewareFunc func) {
 
 void register_endpoint(const char* path, ApiHandler handler) {
     if (endpoint_count < MAX_ENDPOINTS) {
+        printf("Registering API endpoint: %s\n", path);
         api_endpoints[endpoint_count].path = my_strdup(path);
         api_endpoints[endpoint_count].handler = handler;
         endpoint_count++;
+    } else {
+        printf("ERROR: Cannot register endpoint %s - max limit reached\n", path);
+    }
+}
+
+void init_api_routes() {
+    printf("Initializing API routes...\n");
+    
+    // Zarejestruj wszystkie endpointy
+    register_endpoint("/api/statuss", api_status);
+    register_endpoint("/api/echo", api_echo);
+    register_endpoint("/api/healths", api_health);
+    register_endpoint("/api/heartbeat", api_heartbeat);
+    register_endpoint("/api/ping", api_ping);
+    register_endpoint("/api/auth/check", api_auth_check);
+    register_endpoint("/api/system/boot-time", api_system_boot_time);
+    register_endpoint("/api/system-health", api_system_health);
+    
+    printf("Registered %d API endpoints:\n", endpoint_count);
+    for (int i = 0; i < endpoint_count; i++) {
+        printf("  - %s\n", api_endpoints[i].path);
     }
 }
 
@@ -155,6 +190,8 @@ void register_endpoint(const char* path, ApiHandler handler) {
 
 HTTPRequest parse_request(const char* raw_request) {
     HTTPRequest req = {0};
+    if (!raw_request) return req;
+    
     char* line = strtok((char*)raw_request, "\n");
     
     if (line) {
@@ -164,13 +201,17 @@ HTTPRequest parse_request(const char* raw_request) {
     char* headers_end = strstr(raw_request, "\r\n\r\n");
     if (headers_end) {
         size_t headers_len = headers_end - raw_request;
-        strncpy(req.headers, raw_request, headers_len < sizeof(req.headers) ? headers_len : sizeof(req.headers)-1);
+        if (headers_len < sizeof(req.headers)) {
+            strncpy(req.headers, raw_request, headers_len);
+            req.headers[headers_len] = '\0';
+        }
     }
     
     char* body_start = strstr(raw_request, "\r\n\r\n");
     if (body_start) {
         body_start += 4;
         strncpy(req.body, body_start, sizeof(req.body)-1);
+        req.body[sizeof(req.body)-1] = '\0';
     }
     
     return req;
@@ -183,7 +224,7 @@ char* read_file_content(const char* path, size_t* out_size) {
     if (cached) {
         if (out_size) *out_size = cached->size;
         printf("DEBUG: Serving from cache: %s (%zu bytes)\n", path, cached->size);
-        return my_strdup(cached->content);
+        return memdup(cached->content, cached->size);  /* binary-safe, nie uciął CSS/JS */
     }
     
     FILE* file = fopen(path, "rb");
@@ -235,6 +276,8 @@ char* read_file_content(const char* path, size_t* out_size) {
 }
 
 void normalize_path(char* path) {
+    if (!path) return;
+    
     char* src = path;
     char* dst = path;
     
@@ -249,6 +292,8 @@ void normalize_path(char* path) {
 }
 
 void url_decode(char* str) {
+    if (!str) return;
+    
     char* src = str;
     char* dst = str;
     
@@ -265,6 +310,8 @@ void url_decode(char* str) {
 }
 
 const char* get_mime_type(const char* filename) {
+    if (!filename) return DEFAULT_MIME_TYPE;
+    
     const char* ext = strrchr(filename, '.');
     if (!ext) return DEFAULT_MIME_TYPE;
     
@@ -319,26 +366,59 @@ char* compress_gzip(const char* data, size_t size, size_t* compressed_size) {
 }
 
 void add_header(HTTPResponse* response, const char* name, const char* value) {
-    char header[256];
-    snprintf(header, sizeof(header), "%s: %s\r\n", name, value);
-    strncat(response->headers, header, sizeof(response->headers) - strlen(response->headers) - 1);
+    if (!response || !name || !value) return;
+    
+    char header[1024];
+    int needed = snprintf(header, sizeof(header), "%s: %s\r\n", name, value);
+    
+    if (needed > 0 && needed < (int)sizeof(header)) {
+        // Sprawdź czy mamy miejsce w buforze headers
+        size_t current_len = strlen(response->headers);
+        size_t available = sizeof(response->headers) - current_len - 1;
+        
+        if ((size_t)needed < available) {
+            strcat(response->headers, header);
+        }
+    }
 }
 
 void enable_cors(HTTPResponse* response) {
     add_header(response, "Access-Control-Allow-Origin", "*");
-    add_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    add_header(response, "Access-Control-Allow-Headers", "Content-Type");
+    add_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+    add_header(response, "Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+    add_header(response, "Access-Control-Allow-Credentials", "true");
+    add_header(response, "Access-Control-Max-Age", "86400");
 }
 
+/* ========== ENDPOINTY API ========== */
+
 HTTPResponse api_status(HTTPRequest* request) {
-    (void)request;  // Oznaczamy jako nieużywany parametr
+    (void)request;
     
     HTTPResponse response = {0};
     response.status_code = 200;
     strcpy(response.content_type, "application/json");
-    const char* content = "{\"status\":\"running\",\"version\":\"1.0\",\"endpoints\":[\"/api/status\",\"/api/echo\"]}";
-    response.content = my_strdup(content);
-    response.content_size = strlen(content);
+    
+    const char* content = "{\"status\":\"running\",\"version\":\"1.0\",\"timestamp\":";
+    char timestamp[20];
+    time_t now = time(NULL);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    
+    // Zwiększ rozmiar bufora - teraz 512 bajtów zamiast 117
+    char* full_content = malloc(512);
+    if (!full_content) {
+        return error_response(500, "Memory allocation failed");
+    }
+    
+    snprintf(full_content, 512, 
+             "%s\"%s\",\"endpoints\":[\"/api/status\",\"/api/echo\",\"/api/health\","
+             "\"/api/heartbeat\",\"/api/ping\",\"/api/auth/check\"]}", 
+             content, timestamp);
+    
+    response.content = full_content;
+    response.content_size = strlen(full_content);
+    
+    enable_cors(&response);
     return response;
 }
 
@@ -354,8 +434,8 @@ HTTPResponse api_echo(HTTPRequest* request) {
 
     // Obliczenie wymaganego rozmiaru bufora
     size_t needed = snprintf(NULL, 0, 
-        "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%.2000s\"}",
-        method, path, body) + 1;
+        "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%.2000s\",\"timestamp\":%ld}",
+        method, path, body, (long)time(NULL)) + 1;
 
     // Alokacja pamięci
     response.content = malloc(needed);
@@ -367,8 +447,8 @@ HTTPResponse api_echo(HTTPRequest* request) {
 
     // Formatowanie odpowiedzi z ograniczeniem długości body
     snprintf(response.content, needed,
-        "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%.2000s\"}",
-        method, path, body);
+        "{\"method\":\"%s\",\"path\":\"%s\",\"body\":\"%.2000s\",\"timestamp\":%ld}",
+        method, path, body, (long)time(NULL));
     
     response.content_size = needed - 1;
     enable_cors(&response);
@@ -376,16 +456,181 @@ HTTPResponse api_echo(HTTPRequest* request) {
     return response;
 }
 
+HTTPResponse api_health(HTTPRequest* request) {
+    (void)request;
+    
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/json");
+    
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    char timestamp[20];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+    
+    // Oblicz uptime
+    long uptime_seconds = server_start_time > 0 ? (now - server_start_time) : 0;
+    
+    // Stwórz JSON response
+    char* json_response = malloc(512);
+    if (!json_response) {
+        return error_response(500, "Memory allocation failed");
+    }
+    
+    snprintf(json_response, 512, 
+             "{\"status\":\"healthy\",\"healthy\":true,\"timestamp\":\"%s\",\"uptime\":%ld,\"version\":\"1.0\"}",
+             timestamp, uptime_seconds);
+    
+    response.content = json_response;
+    response.content_size = strlen(json_response);
+    
+    // enable_cors(&response);
+    return response;
+}
+
+HTTPResponse api_heartbeat(HTTPRequest* request) {
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/json");
+    
+    // Pobierz timestamp z body jeśli istnieje
+    long client_timestamp = 0;
+    if (request && request->body && strlen(request->body) > 0) {
+        // Spróbuj parsować JSON
+        char* timestamp_str = strstr(request->body, "\"timestamp\":");
+        if (timestamp_str) {
+            timestamp_str += 12; // Przesuń za "\"timestamp\":"
+            client_timestamp = strtol(timestamp_str, NULL, 10);
+        }
+    }
+    
+    char* content = malloc(200);
+    if (!content) {
+        return error_response(500, "Memory allocation failed");
+    }
+    
+    time_t now = time(NULL);
+    snprintf(content, 200, 
+             "{\"status\":\"ok\",\"server_timestamp\":%ld,\"client_timestamp\":%ld,\"uptime\":%ld}",
+             (long)now, client_timestamp, (long)(now - server_start_time));
+    
+    response.content = content;
+    response.content_size = strlen(content);
+    
+    enable_cors(&response);
+    return response;
+}
+
+HTTPResponse api_auth_check(HTTPRequest* request) {
+    (void)request;
+    
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/json");
+    
+    const char* content = "{\"authenticated\":true,\"user\":\"admin\",\"permissions\":[\"read\",\"write\",\"admin\"]}";
+    response.content = my_strdup(content);
+    response.content_size = strlen(content);
+    
+    enable_cors(&response);
+    return response;
+}
+
+HTTPResponse api_ping(HTTPRequest* request) {
+    (void)request;
+    
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/json");
+    
+    const char* content = "{\"pong\":true,\"timestamp\":";
+    char* full_content = malloc(strlen(content) + 50);
+    if (!full_content) {
+        return error_response(500, "Memory allocation failed");
+    }
+    
+    sprintf(full_content, "%s%ld}", content, (long)time(NULL));
+    response.content = full_content;
+    response.content_size = strlen(full_content);
+    
+    return response;
+}
+
+HTTPResponse api_system_boot_time(HTTPRequest* request) {
+    (void)request;
+    
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/json");
+    
+    // Symulowany boot time (w praktyce pobierany z systemu)
+    static long boot_time = 0;
+    if (boot_time == 0) {
+        boot_time = time(NULL) - (rand() % 86400); // Losowy boot time w ciągu ostatnich 24h
+    }
+    
+    char* content = malloc(100);
+    if (!content) {
+        return error_response(500, "Memory allocation failed");
+    }
+    
+    snprintf(content, 100, "{\"bootTime\":%ld}", boot_time);
+    response.content = content;
+    response.content_size = strlen(content);
+    
+    enable_cors(&response);
+    return response;
+}
+
+HTTPResponse api_system_health(HTTPRequest* request) {
+    (void)request;
+    
+    HTTPResponse response = {0};
+    response.status_code = 200;
+    strcpy(response.content_type, "application/json");
+    
+    const char* content = "true"; // Vue oczekuje true/false
+    response.content = my_strdup(content);
+    response.content_size = strlen(content);
+    
+    return response;
+}
+
+/* ========== GŁÓWNA FUNKCJA OBSŁUGI ŻĄDAŃ ========== */
+
 HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
     HTTPResponse response = {0};
     char decoded_path[1024] = {0};
     char file_path[2048] = {0};
     
+    if (!request) {
+        return error_response(400, "Invalid request");
+    }
+    
+    printf("\n=== NEW REQUEST ===\n");
+    printf("Method: %s\n", request->method);
+    printf("Path: %s\n", request->path);
+    printf("Protocol: %s\n", request->protocol);
+    
+    // 0. Obsługa OPTIONS (CORS preflight)
+    if (strcmp(request->method, "OPTIONS") == 0) {
+        printf("DEBUG: Handling OPTIONS request for CORS preflight\n");
+        response.status_code = 200;
+        enable_cors(&response);
+        add_header(&response, "Content-Length", "0");
+        return response;
+    }
+    
     // 1. Normalizacja ścieżki
     strncpy(decoded_path, request->path, sizeof(decoded_path)-1);
+    decoded_path[sizeof(decoded_path)-1] = '\0';
+    
     url_decode(decoded_path);
     normalize_path(decoded_path);
+    
+    printf("DEBUG: Decoded path: '%s'\n", decoded_path);
 
+    // 2. Bezpieczeństwo
     if (is_path_traversal(decoded_path)) {
         log_message(LOG_SECURITY, "Path traversal attempt detected: %s", decoded_path);
         return error_response(403, "Access denied");
@@ -411,29 +656,37 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
         return error_response(403, "Access denied");
     }
     
-    printf("DEBUG: Handling path: '%s'\n", decoded_path); // Log diagnostyczny
-
-    // 2. Sprawdzenie endpointów API (najpierw!)
-    if (strncmp(decoded_path, config->api_prefix, strlen(config->api_prefix)) == 0) {
+    // 3. Sprawdzenie endpointów API (najpierw!)
+    if (strncmp(decoded_path, API_PREFIX, strlen(API_PREFIX)) == 0) {
         printf("DEBUG: This is an API request\n");
+        printf("DEBUG: Looking for handler among %d registered endpoints\n", endpoint_count);
         
         for (int i = 0; i < endpoint_count; i++) {
-            printf("DEBUG: Checking endpoint '%s'\n", api_endpoints[i].path);
+            printf("DEBUG: Checking endpoint '%s' against '%s'\n", 
+                   api_endpoints[i].path, decoded_path);
             
-            if (strcmp(decoded_path, api_endpoints[i].path) == 0) {
+            if (api_endpoints[i].path && strcmp(decoded_path, api_endpoints[i].path) == 0) {
                 printf("DEBUG: Found handler for '%s'\n", decoded_path);
                 return api_endpoints[i].handler((HTTPRequest*)request);
             }
         }
+        
         printf("ERROR: No handler for API path '%s'\n", decoded_path);
+        printf("DEBUG: Available endpoints:\n");
+        for (int i = 0; i < endpoint_count; i++) {
+            printf("  - %s\n", api_endpoints[i].path);
+        }
+        
         return error_response(404, "Endpoint not found");
     }
 
-    // 3. Obsługa plików statycznych (assets, static)
+    // 4. Obsługa plików statycznych (assets, static)
     if (strstr(decoded_path, "/assets/") == decoded_path || 
         strstr(decoded_path, "/static/") == decoded_path) {
         
         snprintf(file_path, sizeof(file_path), "%s%s", config->frontend_path, decoded_path);
+        
+        printf("DEBUG: Static file request: %s\n", file_path);
         
         // Specjalna obsługa WASM
         if (strstr(file_path, ".wasm") != NULL) {
@@ -445,16 +698,28 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
             response.status_code = 200;
             const char* mime_type = get_mime_type(file_path);
             strcpy(response.content_type, mime_type ? mime_type : DEFAULT_MIME_TYPE);
+
+            /* Vite buduje assety z hashem w nazwie pliku - możemy cache'ować rok */
+            add_header(&response, "Cache-Control", "public, max-age=31536000, immutable");
+
+            /* Nagłówki CORS potrzebne dla modulepreload/crossorigin */
+            add_header(&response, "Access-Control-Allow-Origin", "*");
+            add_header(&response, "Vary", "Accept-Encoding");
+
             return response;
         }
+
+        /* Plik nie istnieje - zwróć czytelny błąd zamiast 404 bez treści */
+        log_message(LOG_ERROR, "Static asset not found: %s", file_path);
         return error_response(404, "Static file not found");
     }
 
-    // 4. Dla innych ścieżek z rozszerzeniem (np. .css, .js)
+    // 5. Dla innych ścieżek z rozszerzeniem (np. .css, .js)
     if (strchr(decoded_path, '.') != NULL) {
         snprintf(file_path, sizeof(file_path), "%s%s", config->frontend_path, decoded_path);
         struct stat st;
         if (stat(file_path, &st) == 0 && S_ISREG(st.st_mode)) {
+            printf("DEBUG: File request with extension: %s\n", file_path);
             response.content = read_file_content(file_path, &response.content_size);
             if (response.content) {
                 response.status_code = 200;
@@ -464,8 +729,10 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
         }
     }
 
-    // 5. Domyślnie: index.html dla SPA
+    // 6. Domyślnie: index.html dla SPA
     snprintf(file_path, sizeof(file_path), "%s/index.html", config->frontend_path);
+    printf("DEBUG: Fallback to SPA index: %s\n", file_path);
+    
     response.content = read_file_content(file_path, &response.content_size);
     if (response.content) {
         response.status_code = 200;
@@ -473,12 +740,11 @@ HTTPResponse handle_request(const HTTPRequest* request, const Config* config) {
         return response;
     }
 
+    printf("ERROR: File not found: %s\n", file_path);
     return error_response(404, "File not found");
 }
 
 char* build_response(const HTTPResponse* response, size_t* response_size, const Config* config) {
-    (void)config; // Wyciszenie warningu o nieużywanym parametrze
-    
     if (!response || !response->content) {
         if (response_size) *response_size = 0;
         return NULL;
@@ -487,62 +753,55 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
     const char* status_msg = "OK";
     switch (response->status_code) {
         case 200: status_msg = "OK"; break;
+        case 400: status_msg = "Bad Request"; break;
+        case 403: status_msg = "Forbidden"; break;
         case 404: status_msg = "Not Found"; break;
+        case 408: status_msg = "Request Timeout"; break;
         case 500: status_msg = "Internal Server Error"; break;
+        case 503: status_msg = "Service Unavailable"; break;
         default: status_msg = "Unknown"; break;
     }
 
-    printf("DEBUG: Building response for status %d, type %s, size %zu\n",
-          response->status_code, response->content_type, response->content_size);
-
-    char headers[2048] = {0};
-
+    // Utwórz kopię response do dodania nagłówków
     HTTPResponse temp_response = *response;
     add_security_headers(&temp_response, config);
 
-    if (strcmp(response->content_type, "application/wasm") == 0) {
-        snprintf(headers, sizeof(headers),
-            "HTTP/1.1 %d OK\r\n"
-            "Content-Type: application/wasm\r\n"
-            "Content-Length: %zu\r\n"
-            "Cross-Origin-Opener-Policy: same-origin\r\n"
-            "Cross-Origin-Embedder-Policy: require-corp\r\n"
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n\r\n",
-            temp_response.status_code,
-            temp_response.content_size);
-    } else {
-        snprintf(headers, sizeof(headers),
-            "HTTP/1.1 %d %s\r\n"
-            "Content-Type: %s\r\n"
-            "Content-Length: %zu\r\n"
-            "%s"
-            "Connection: close\r\n"
-            "\r\n",
-            temp_response.status_code,
-            status_msg,
-            temp_response.content_type,
-            temp_response.content_size,
-            temp_response.headers);
+    // Dodaj podstawowe nagłówki jeśli nie istnieją
+    if (strstr(temp_response.headers, "Content-Type:") == NULL) {
+        add_header(&temp_response, "Content-Type", temp_response.content_type);
     }
+    
+    // ZAWSZE dodaj Content-Length
+    char content_length[32];
+    snprintf(content_length, sizeof(content_length), "%zu", temp_response.content_size);
+    add_header(&temp_response, "Content-Length", content_length);
+    
+    // Dla połączeń HTTP/1.1, dodaj Connection: close lub keep-alive
+    add_header(&temp_response, "Connection", "close");
+
+    // Zbuduj nagłówki
+    char headers[8192] = {0};   /* zwiększono - musi pomieścić wszystkie nagłówki z temp_response */
+    snprintf(headers, sizeof(headers),
+        "HTTP/1.1 %d %s\r\n"
+        "%s"
+        "\r\n",
+        temp_response.status_code,
+        status_msg,
+        temp_response.headers);
 
     size_t header_len = strlen(headers);
     size_t total_size = header_len + temp_response.content_size;
     
-    printf("DEBUG: Response headers (%zu bytes):\n%.*s\n", header_len, (int)header_len, headers);
-    printf("DEBUG: First 100 bytes of content: %.*s\n",
-          (int)(temp_response.content_size > 100 ? 100 : temp_response.content_size),
-          temp_response.content);
-
     char* http_response = malloc(total_size);
     if (!http_response) {
-        perror("malloc failed in build_response");
         if (response_size) *response_size = 0;
         return NULL;
     }
 
     memcpy(http_response, headers, header_len);
-    memcpy(http_response + header_len, temp_response.content, temp_response.content_size);
+    if (temp_response.content_size > 0) {
+        memcpy(http_response + header_len, temp_response.content, temp_response.content_size);
+    }
 
     if (response_size) {
         *response_size = total_size;
@@ -554,6 +813,7 @@ char* build_response(const HTTPResponse* response, size_t* response_size, const 
 HTTPResponse handle_wasm_file(const char* file_path) {
     FILE* file = fopen(file_path, "rb");
     if (!file) {
+        printf("ERROR: WASM file not found: %s\n", file_path);
         return error_response(404, "WASM file not found");
     }
 
@@ -581,47 +841,14 @@ HTTPResponse handle_wasm_file(const char* file_path) {
         add_header(&response, "Cross-Origin-Opener-Policy", "same-origin");
         add_header(&response, "Cross-Origin-Embedder-Policy", "require-corp");
         add_header(&response, "Cache-Control", "no-store");
+        add_header(&response, "Accept-Ranges", "bytes");
     } else {
         fclose(file);
         return error_response(500, "Memory allocation failed");
     }
     
     fclose(file);
-    return response;
-}
-
-HTTPResponse handle_wasm_request(const char* file_path) {
-    FILE* file = fopen(file_path, "rb");
-    if (!file) {
-        return error_response(404, "WASM file not found");
-    }
-
-    fseek(file, 0, SEEK_END);
-    size_t file_size = ftell(file);
-    rewind(file);
-
-    HTTPResponse response = {0};
-    response.status_code = 200;
-    strcpy(response.content_type, "application/wasm");
-    response.is_binary = 1;
-    response.skip_compression = 1;  // Disable compression for WASM
-    response.content = malloc(file_size);
-    
-    if (response.content) {
-        size_t bytes_read = fread(response.content, 1, file_size, file);
-        if (bytes_read == file_size) {
-            response.content_size = file_size;
-            // Required security headers for WASM
-            add_header(&response, "Cross-Origin-Opener-Policy", "same-origin");
-            add_header(&response, "Cross-Origin-Embedder-Policy", "require-corp");
-        } else {
-            free(response.content);
-            fclose(file);
-            return error_response(500, "Error reading WASM file");
-        }
-    }
-    
-    fclose(file);
+    printf("DEBUG: Served WASM file: %s (%zu bytes)\n", file_path, file_size);
     return response;
 }
 
@@ -638,15 +865,18 @@ void add_security_headers(HTTPResponse* response, const Config* config) {
     add_header(response, "X-Frame-Options", "DENY");
     add_header(response, "X-XSS-Protection", "1; mode=block");
     
-    // Content Security Policy
-    //add_header(response, "Content-Security-Policy", 
-    //    "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';");
+    // NIE DODAWAJ Content-Security-Policy na razie
+    // add_header(response, "Content-Security-Policy", "...");
     
     // Referrer Policy
     add_header(response, "Referrer-Policy", "strict-origin-when-cross-origin");
     
-    // Permissions Policy
-    add_header(response, "Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()");
+    // Cache Control dla API
+    if (strstr(response->content_type, "application/json") != NULL) {
+        add_header(response, "Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+        add_header(response, "Pragma", "no-cache");
+        add_header(response, "Expires", "0");
+    }
 }
 
 void free_response(HTTPResponse* response) {
