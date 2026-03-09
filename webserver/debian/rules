@@ -1,61 +1,19 @@
 #!/usr/bin/make -f
-
-export DH_VERBOSE=1
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 %:
-	dh $@ 
+	dh $@ --buildsystem=cmake
 
-override_dh_auto_build:
-	mkdir -p dist
-	$(MAKE)
-	@echo "✅ Build completed"
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DWITH_LUA=ON \
+		-DWITH_NGHTTP2=ON \
+		-DWITH_BROTLI=ON \
+		-DWITH_V8=OFF \
+		-DWITH_QUICHE=OFF
 
-override_dh_auto_install:
-	# Tworzymy strukturę katalogów
-	install -d debian/nas-web/usr/local/bin
-	install -d debian/nas-web/etc/nas-web
-	install -d debian/nas-web/var/log/nas-web
-	install -d debian/nas-web/lib/systemd/system
-	
-	# Instalujemy plik wykonywalny
-	install -m 755 dist/nas-web debian/nas-web/usr/local/bin/
-	
-	# Sprawdź czy plik konfiguracyjny istnieje w różnych lokalizacjach
-	if [ -f config/nas-web.conf ]; then \
-		install -m 644 config/nas-web.conf debian/nas-web/etc/nas-web/; \
-	elif [ -f nas-web.conf ]; then \
-		install -m 644 nas-web.conf debian/nas-web/etc/nas-web/; \
-	elif [ -f debian/nas-web.conf ]; then \
-		install -m 644 debian/nas-web.conf debian/nas-web/etc/nas-web/; \
-	else \
-		echo "⚠️  Warning: No config file found, creating default"; \
-		echo "# Default NAS Web Configuration" > debian/nas-web/etc/nas-web/nas-web.conf; \
-		echo "PORT=8080" >> debian/nas-web/etc/nas-web/nas-web.conf; \
-		echo "FRONTEND_PATH=/opt/nas-panel/dist" >> debian/nas-web/etc/nas-web/nas-web.conf; \
-	fi
-	
-	# Instaluj plik service jeśli istnieje
-	if [ -f debian/nas-web.service ]; then \
-		install -m 644 debian/nas-web.service debian/nas-web/lib/systemd/system/; \
-	elif [ -f nas-web.service ]; then \
-		install -m 644 nas-web.service debian/nas-web/lib/systemd/system/; \
-	else \
-		echo "⚠️  Warning: No service file found, skipping"; \
-	fi
-	
-	@echo "✅ Files installed to debian/nas-web/"
-
-override_dh_missing:
-	dh_missing --list-missing
-
-override_dh_usrlocal:
-	# Wyłączamy dh_usrlocal bo mamy pliki w /usr/local/bin
-	@echo "ℹ️  Skipping dh_usrlocal"
-
-override_dh_clean:
-	dh_clean
-	$(MAKE) clean
-	rm -rf dist/
-
-override_dh_install:
-	@echo "ℹ️  Skipping dh_install (already done in dh_auto_install)"
+override_dh_auto_test:
+	# skip unit tests during package build
+	: no-op

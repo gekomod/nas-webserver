@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+systemctl stop nas-web || true
+systemctl disable nas-web || true

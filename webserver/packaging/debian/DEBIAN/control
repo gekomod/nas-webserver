@@ -1,0 +1,10 @@
+Package: nas-web
+Version: 2.0.0
+Section: web
+Priority: optional
+Architecture: amd64
+Depends: libuv1, libssl3, liblua5.4-0
+Maintainer: NAS Panel <admin@localhost>
+Description: nas-web — high-performance reverse proxy for NAS Panel
+ Fast C++20 reverse proxy with Lua scripting, HTTP/2, built-in
+ health endpoints and admin panel. Replaces nginx for NAS Panel.

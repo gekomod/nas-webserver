@@ -1,84 +1,45 @@
 #!/bin/sh
-# Script run after installation/upgrade
-
 set -e
 
 case "$1" in
     configure)
-        echo "🔧 Configuring NAS Web Server..."
-        
-        # Sprawdź czy to pierwsza instalacja
-        if [ -z "$2" ]; then
-            echo "🆕 First installation detected"
-            
-            # Utwórz użytkownika i grupę
-            if ! getent group nasweb >/dev/null; then
-                addgroup --system nasweb
-                echo "👥 Created nasweb group"
-            fi
-            
-            if ! id nasweb >/dev/null 2>&1; then
-                adduser --system --no-create-home --home /var/empty \
-                        --shell /bin/false --ingroup nasweb nasweb
-                echo "👤 Created nasweb user"
-            fi
-            
-            # Jeśli istnieje domyślna konfiguracja, ale nie ma głównej
-            if [ -f /etc/nas-web/nas-web.conf.default ] && [ ! -f /etc/nas-web/nas-web.conf ]; then
-                cp /etc/nas-web/nas-web.conf.default /etc/nas-web/nas-web.conf
-                echo "📄 Created initial configuration"
-            fi
+        # Create required directories
+        mkdir -p /var/log/nas-web
+        mkdir -p /var/log/nas-panel
+        chmod 755 /var/log/nas-web /var/log/nas-panel
 
-            systemctl enable nas-web.service || true
-            systemctl start nas-web.service || true
-            
-        else
-            echo "🔄 Upgrade from version $2 detected"
+        # Create default log files if they don't exist
+        touch /var/log/nas-web/access.log /var/log/nas-web/error.log
+        chmod 644 /var/log/nas-web/access.log /var/log/nas-web/error.log
 
-            # Utwórz użytkownika i grupę
-            if ! getent group nasweb >/dev/null; then
-                addgroup --system nasweb
-                echo "👥 Created nasweb group"
-            fi
-
-            if ! id nasweb >/dev/null 2>&1; then
-                adduser --system --no-create-home --home /var/empty \
-                        --shell /bin/false --ingroup nasweb nasweb
-                echo "👤 Created nasweb user"
-            fi
-            
-            # Zachowaj istniejącą konfigurację podczas upgradów
-            if [ -f /etc/nas-web/nas-web.conf ] && [ -f /etc/nas-web/nas-web.conf.default ]; then
-                # Zachowaj tylko jeśli plik konfiguracyjny nie został zmodyfikowany
-                if ! cmp -s /etc/nas-web/nas-web.conf /etc/nas-web/nas-web.conf.default; then
-                    echo "📋 Preserving existing configuration (different from default)"
-                else
-                    echo "📋 Using default configuration"
-                fi
-            fi
-
-            # Jeśli istnieje domyślna konfiguracja, ale nie ma głównej
-            if [ -f /etc/nas-web/nas-web.conf.default ] && [ ! -f /etc/nas-web/nas-web.conf ]; then
-                cp /etc/nas-web/nas-web.conf.default /etc/nas-web/nas-web.conf
-                echo "📄 Created initial configuration"
-            fi
-        fi
-        
-        # Ustaw prawa własności
-        if [ -d /var/log/nas-web ]; then
-            chown -R nasweb:nasweb /var/log/nas-web
-            chmod 755 /var/log/nas-web
+        # Reload systemd and start service
+        if [ -x /bin/systemctl ] || [ -x /usr/bin/systemctl ]; then
+            systemctl daemon-reload || true
+            systemctl enable nas-web || true
+            systemctl restart nas-web || true
         fi
 
-        systemctl enable nas-web.service || true
-        systemctl restart nas-web.service || true
-
-        echo "✅ Configuration completed"
-        ;;
-        
+        echo ""
+        echo "╔═════════════════════════════════════════════╗"
+        echo "║       nas-web v2.2.x installed OK!          ║"
+        echo "╠═════════════════════════════════════════════╣"
+        echo "║  Config:   /etc/nas-web/nas-web.conf        ║"
+        echo "║  Logs:     /var/log/nas-web/                ║"
+        echo "║  Admin:    http://localhost/np_admin         ║"
+        echo "║  Login:    admin / nas-web-admin            ║"
+        echo "║                                             ║"
+        echo "║  Zmień hasło w: /etc/nas-web/nas-web.conf   ║"
+        echo "║  Sekcja:   admin_password <haslo>;          ║"
+        echo "╚═════════════════════════════════════════════╝"
+        echo ""
+    ;;
     abort-upgrade|abort-remove|abort-deconfigure)
-        echo "❌ Installation aborted"
-        ;;
+    ;;
+    *)
+        echo "postinst called with unknown argument '$1'" >&2
+        exit 1
+    ;;
 esac
 
+#DEBHELPER#
 exit 0

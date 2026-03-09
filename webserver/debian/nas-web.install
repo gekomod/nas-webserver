@@ -1,3 +1,4 @@
-dist/nas-web usr/local/bin/
-debian/nas-web.service lib/systemd/system/
-debian/config/nas-web.conf.default etc/nas-web/
+usr/local/bin/nas-web
+etc/nas-web/nas-web.conf
+etc/nas-web/scripts/*
+lib/systemd/system/nas-web.service

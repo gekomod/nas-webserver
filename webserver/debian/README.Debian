@@ -1,0 +1,68 @@
+nas-web for Debian
+==================
+
+Wymagania systemowe
+-------------------
+  apt install libuv1 libssl3 zlib1g libbrotli1 liblua5.4-0 libnghttp2-14
+
+Konfiguracja
+------------
+  Główny plik:   /etc/nas-web/nas-web.conf
+  Skrypty Lua:   /etc/nas-web/scripts/
+  Logi:          /var/log/nas-web/
+  PID:           /run/nas-web.pid
+
+Panel Administracyjny
+---------------------
+  URL:      http://<host>/np_admin
+  Login:    admin
+  Hasło:    nas-web-admin  ← ZMIEŃ TO!
+
+Zmiana hasła w /etc/nas-web/nas-web.conf:
+  admin_user     admin;
+  admin_password twoje-nowe-haslo;
+
+Po zmianie: systemctl reload nas-web
+
+Zarządzanie serwisem
+--------------------
+  systemctl start   nas-web
+  systemctl stop    nas-web
+  systemctl restart nas-web
+  systemctl reload  nas-web    # hot reload (SIGHUP)
+  systemctl status  nas-web
+
+Logi
+----
+  journalctl -u nas-web -f
+  tail -f /var/log/nas-web/access.log
+
+Endpointy zdrowia
+-----------------
+  GET /apis/healths    — health + uptime JSON
+  GET /apis/heartbeat  — latency check
+  GET /apis/ping       — pong
+
+ACME / Let's Encrypt
+--------------------
+W konfiguracji:
+  acme {
+      email      twoj@email.com;
+      domain     twoja.domena.pl;
+      cert_dir   /etc/nas-web/certs;
+      auto_renew on;
+  }
+
+DNS-01 (wildcard) z Cloudflare:
+  acme {
+      challenge    dns-01;
+      dns_provider cloudflare;
+      dns_cf_token CF_API_TOKEN;
+      dns_cf_zone  CF_ZONE_ID;
+  }
+
+Zależności budowania
+--------------------
+  cmake g++ pkg-config
+  libuv1-dev libssl-dev zlib1g-dev libbrotli-dev
+  liblua5.4-dev libnghttp2-dev

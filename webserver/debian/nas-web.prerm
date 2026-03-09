@@ -1,22 +1,20 @@
 #!/bin/sh
-# Script run before removal/upgrade
-
 set -e
 
 case "$1" in
-    remove|upgrade)
-        # Stop the service before removal/upgrade
-        if systemctl is-active --quiet nas-web; then
-            echo "⏹️  Stopping NAS Web Server"
+    remove|upgrade|deconfigure)
+        if [ -x /bin/systemctl ] || [ -x /usr/bin/systemctl ]; then
             systemctl stop nas-web || true
+            systemctl disable nas-web || true
         fi
-        
-        if [ "$1" = "remove" ]; then
-            echo "🗑️  Removing NAS Web Server"
-        else
-            echo "🔄 Preparing for upgrade"
-        fi
-        ;;
+    ;;
+    failed-upgrade)
+    ;;
+    *)
+        echo "prerm called with unknown argument '$1'" >&2
+        exit 1
+    ;;
 esac
 
+#DEBHELPER#
 exit 0

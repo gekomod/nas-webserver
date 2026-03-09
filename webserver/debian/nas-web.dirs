@@ -1,4 +1,7 @@
-etc/nas-web
 usr/local/bin
+etc/nas-web
+etc/nas-web/scripts
 var/log/nas-web
+var/log/nas-panel
+var/run
 lib/systemd/system

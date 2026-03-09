@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+# Create log dir
+mkdir -p /var/log/nas-web
+# Enable and start service
+systemctl daemon-reload
+systemctl enable nas-web
+systemctl start nas-web || true
+echo "nas-web installed. Config: /etc/nas-web/nas-web.conf"
+echo "Admin panel: http://localhost/np_admin"

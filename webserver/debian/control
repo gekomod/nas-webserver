@@ -1,23 +1,46 @@
 Source: nas-web
 Section: web
 Priority: optional
-Maintainer: Gekomod <zaba141@o2.pl>
-Build-Depends: debhelper-compat (= 13), libssl-dev, libz-dev
-Standards-Version: 4.6.0
-Homepage: https://github.com/gekomod/nas-webserver
-Vcs-Browser: https://github.com/gekomod/nas-webserver
-Vcs-Git: https://github.com/gekomod/nas-webserver.git
+Maintainer: NAS Panel Team <admin@localhost>
+Build-Depends: debhelper-compat (= 13),
+ cmake (>= 3.18),
+ g++ (>= 10),
+ pkg-config,
+ libuv1-dev,
+ libssl-dev,
+ zlib1g-dev,
+ libbrotli-dev,
+ liblua5.4-dev,
+ libnghttp2-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/nas-panel/nas-web
 
 Package: nas-web
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, libssl3, zlib1g
-Description: Lightweight NAS web interface
- A fast and secure web interface for NAS management with modern features
- including HTTPS support, API endpoints, and real-time monitoring.
+Depends: ${shlibs:Depends}, ${misc:Depends},
+ libuv1 (>= 1.40),
+ libssl3,
+ zlib1g,
+ libbrotli1,
+ liblua5.4-0,
+ libnghttp2-14
+Recommends:
+ curl,
+ openssl
+Suggests:
+ certbot
+Description: NAS Panel Web Server
+ High-performance C++20 reverse proxy for NAS Panel.
  .
  Features:
-  * Secure HTTPS support with modern ciphers
-  * RESTful API for integration
-  * Real-time system monitoring
-  * Thread pool for high performance
-  * Comprehensive security features
+  - HTTP/1.1 and HTTP/2 (nghttp2)
+  - Reverse proxy with upstream pooling and health checks
+  - TLS/SSL via OpenSSL 3 with ACME/Let's Encrypt (HTTP-01, DNS-01)
+  - Lua 5.4 scripting middleware per location
+  - LRU response cache with TTL and RFC 7234 Cache-Control
+  - Token-bucket rate limiter per client IP
+  - Static file serving: gzip, brotli, ETag, Range, SPA fallback
+  - WebSocket proxying
+  - Admin panel at /np_admin with Basic Auth, IP allowlist,
+    real-time dashboard charts, audit log, SSE live log
+  - Built-in health: /apis/healths /apis/heartbeat /apis/ping

@@ -1,0 +1,30 @@
+[Unit]
+Description=nas-web — NAS Panel Web Server
+Documentation=https://github.com/nas-panel/nas-web
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/nas-web /etc/nas-web/nas-web.conf
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nas-web
+
+# Hardening
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log/nas-web /var/run
+
+[Install]
+WantedBy=multi-user.target

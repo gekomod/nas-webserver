@@ -1,164 +1,908 @@
-nas-web (1.2.14) unstable; urgency=high
+nas-web (2.2.41-1) stable; urgency=medium
 
-  * [Poprawka] Krytyczny błąd cache: funkcja read_file_content zwracała
-    my_strdup(cached->content) co obcinało pliki CSS/JS przy pierwszym \0
-    w danych; zastąpiono binary-safe memdup(cached->content, cached->size)
-    – to była główna przyczyna błędu "Unable to preload CSS for /assets/css/..."
-  * [Poprawka] Nagłówki CORS dla assetów: dodano Access-Control-Allow-Origin: *
-    oraz Vary: Accept-Encoding dla wszystkich plików z /assets/ i /static/;
-    brak tych nagłówków blokował modulepreload z atrybutem crossorigin
-  * [Poprawka] Cache-Control dla assetów Vite: dodano
-    "public, max-age=31536000, immutable" – pliki z hashem w nazwie mogą być
-    cache'owane przez przeglądarkę przez rok
-  * [Poprawka] Przepełnienie bufora nagłówków HTTPResponse: zwiększono
-    headers[1024] do headers[4096] w strukturze HTTPResponse (router.h);
-    security headers + CORS + Cache-Control + Content-Length przepełniały
-    bufor co cicho obcinało nagłówek Content-Type
-  * [Poprawka] Lokalny bufor w build_response zwiększony z 4096 do 8192 bajtów
-    aby pomieścić wszystkie nagłówki przy budowaniu pełnej odpowiedzi HTTP
-  * [Poprawka] Parser konfiguracji (config.c): inline komentarze po wartości
-    (np. CACHE_MAX_SIZE=100  # in MB) były niepoprawnie dołączane do wartości;
-    dodano strip komentarzy (#...) i whitespace z wartości konfiguracyjnych
-  * [Poprawka] Parser konfiguracji: cudzysłowy w wartościach (CHROOT_PATH="")
-    były pozostawiane w stringu; dodano ich usuwanie
-  * [Poprawka] Parser konfiguracji: zmieniono sscanf "%[^=]=%s" na
-    "%49[^=]=%199s" aby uniknąć potencjalnego przepełnienia bufora key/value
-  * [Poprawka] add_header: zwiększono lokalny bufor z 512 do 1024 bajtów
-    dla obsługi długich wartości nagłówków (np. Content-Security-Policy)
-  * [Dodano] Nowa funkcja pomocnicza memdup() – binary-safe kopia pamięci
-    używana zamiast my_strdup() dla danych binarnych i plików tekstowych
+  * Cache — naprawione zliczanie statystyk:
+    g_stat_cache_hit nie był inkrementowany przy trafieniu (hit).
+    /np_cache teraz czyta bezpośrednio z cache->stats() i cache->size()
+    zamiast z atomiców które były zerowe.
 
- -- Gekomod <zaba141@o2.pl>  Thu, 05 Mar 2026 12:00:00 +0100
+  * Cache — wyjaśnienie dlaczego może być pusty:
+    Cache działa TYLKO dla GET gdy backend zwraca Cache-Control: max-age
+    LUB gdy lokacja ma cache max_age=30; w nas-web.conf.
+    Domyślnie większość backendów zwraca no-cache/private.
+    Dodany komunikat z instrukcją jak aktywować cache.
 
-nas-web (1.2.13) unstable; urgency=medium
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 23:30:00 +0100
 
-  * Fix Error Logs
-  *
+nas-web (2.2.40-1) stable; urgency=low
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+  * server.cc cache handler — naprawione escapowanie cudzysłowów:
+    snprintf fallback i std::string tag miały nieescapowane " w C++
+    co kompilator interpretował jako user-defined literals.
 
-nas-web (1.2.12) unstable; urgency=medium
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 23:00:00 +0100
 
-  * Fix Error Restart Connection
-  *
+nas-web (2.2.39-1) stable; urgency=low
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+  * cache.cc flush() — usunięto std::unique_lock lk(mu_):
+    ResponseCache jest per-worker (single-threaded access),
+    nie ma pola mu_ — kompilacja test_cache.cc failowała.
 
-nas-web (1.2.11) unstable; urgency=medium
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 22:30:00 +0100
 
-  * Fix auto start add api
-  *
+nas-web (2.2.38-1) stable; urgency=high
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+  * RPS chart — naprawiony (root cause: g_stat_req_per_sec nigdy nie pisany):
+    stats_collector_tick() teraz oblicza delta g_stat_req co sekundę,
+    zapisuje do g_stat_req_per_sec (widoczne w /np_status i /np_stats).
+    Po 1-2s od startu wykres zaczyna się wypełniać rzeczywistymi danymi.
 
-nas-web (1.2.10) unstable; urgency=medium
+  * Cache — naprawione wyświetlanie:
+    - Używa cache->stats_json() zamiast osobnych snprintf (prawdziwe evictions/bytes)
+    - Dodane kolumny: Misses, Evictions
+    - Rozmiar w bajtach/KB/MB w podpisie progress bara
+    - Flush Cache działa przez DELETE /np_cache (nie przez restart)
+    - cache.cc: dodana metoda flush() czyszcząca lru_/map_/stats_
 
-  * Fix auto start
-  *
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 22:00:00 +0100
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+nas-web (2.2.37-1) stable; urgency=high
 
-nas-web (1.2.9) unstable; urgency=medium
+  * DEADLOCK naprawiony — dodawanie IP do blacklist zawieszało serwer:
+    blacklist_save() pobierała g_blacklist_mu wewnętrznie,
+    ale była wywoływana z handlera który już trzymał ten mutex.
+    Fix: blacklist_save_nolock() dla wywołań wewnątrz sekcji krytycznej.
 
-  * Fix auto start
-  *
+  * np_stats zawsze zwracało [] — brakujący wątek zbierający dane:
+    g_stats_hist nigdy nie był wypełniany (brak kodu który pushuje sample).
+    Dodany stats_thread: co 1s wywołuje stats_collector_tick() który
+    zapisuje req_per_sec, err/s, cache_hits, active_conns do deque.
+    Teraz Dashboard charts i RPS chart mają dane po kilku sekundach.
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+  * CSS AutoBan / WAF Regex / WAF ModSec — dodany wrapper .panel:
+    Sekcje nie miały div.panel => brak tła, ramki, border-radius.
+    Każda sekcja WAF opakowana w <div class="panel" style="overflow:hidden">.
 
-nas-web (1.2.8) unstable; urgency=medium
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 21:00:00 +0100
 
-  * Fix Update
-  *
+nas-web (2.2.36-1) stable; urgency=medium
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+  * Wykresy RPS i Dashboard — naprawione (root cause znaleziony):
+    fetchAll() był wywoływany TYLKO gdy zakładka Overview aktywna.
+    Gdy użytkownik przełączył na Dashboard/inną zakładkę — RPS[]
+    przestawał być uzupełniany → canvas pusty. Teraz fetchAll()
+    jest wywoływany co 5s zawsze, niezależnie od aktywnej zakładki.
 
-nas-web (1.2.7) unstable; urgency=medium
+  * Dashboard WAF stats (Blocked/Detected/Top Threat/Checked):
+    updateWafDashboard() nie był nigdzie wywoływany — teraz:
+    - wołany z fetchAll() gdy sec-dashboard aktywny
+    - wołany przy show('dashboard') z requestAnimationFrame
+    - wołany z setInterval co 10s gdy dashboard widoczny
 
-  * Add benchmark
-  * 
+  * Canvas wymiary — offsetWidth zamiast getBoundingClientRect():
+    offsetWidth działa poprawnie gdy sekcja jest już display:block
+    (po show()), getBoundingClientRect może zwracać 0 w tym momencie.
 
- -- Gekomod <zaba141@o2.pl>  Thu, 21 Aug 2025 16:16:22 +0200
+  * WAF/AutoBan CSS — usunięty class='stat-grid' z sekcji 3-kolumnowych:
+    .stat-grid wymusza repeat(4,1fr) globalnie — nadpisywał inline
+    grid-template-columns:repeat(3,1fr) w WAF Regex i WAF ModSec.
 
-nas-web (1.2.6) unstable; urgency=medium
+  * Security IP Allowlist — tooltip wyjaśniający że to IP z perspektywy
+    serwera (może być IP proxy/gateway, nie prawdziwe IP użytkownika).
 
-  * Rebuild Install Script
-  * Add Secure
-  * Add More Logging
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 20:00:00 +0100
 
- -- Gekomod <zaba141@o2.pl>  Wed, 20 Jun 2025 18:20:00 +0200
+nas-web (2.2.35-1) stable; urgency=medium
 
-nas-web (1.2.5) unstable; urgency=medium
+  * Header badges WAF + 'Secured by WAF' — faktycznie naprawione:
+    Funkcja updateWafHeaderBadges() nie istniała w pliku (wypadła
+    podczas poprzednich edycji). Napisana od nowa i podpięta do:
+    - fetchAll() — wywołanie co 5s razem z pollStatus
+    - init() — wywołanie przy starcie po zalogowaniu
+    Badges: 🔍 BLOCK/DETECT/OFF (regex) + 🛡 ModSec BLOCK/DETECT/OFF
+    Secured badge: pojawia się gdy anyBlock=true (co najmniej 1 WAF w BLOCK)
 
-  * Add support MultiThreads
-  * Fix cache
-  * Add Logging
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 19:00:00 +0100
 
- -- Gekomod <zaba141@o2.pl>  Wed, 18 Jun 2025 15:12:00 +0200
+nas-web (2.2.34-1) stable; urgency=medium
 
-nas-web (1.2.4) unstable; urgency=medium
+  * Wykresy canvas — naprawione renderowanie (Overview + Dashboard):
 
-  * Fix Load Images
+    Główna przyczyna: canvas.offsetWidth/offsetHeight zwraca 0 gdy
+    sekcja ma display:none (przed pierwszym kliknięciem zakładki).
 
- -- Gekomod <zaba141@o2.pl>  Wed, 10 Jun 2025 14:30:00 +0200
+    Poprawki:
+    - getBoundingClientRect() zamiast offsetWidth — działa dla ukrytych el.
+    - ctx.setTransform(dpr,0,0,dpr,0,0) zamiast ctx.scale() — nie kumuluje
+    - requestAnimationFrame przy show('overview') i show('dashboard') —
+      browser zdąży pokazać sekcję zanim canvas dostanie wymiary
+    - drawRpsChart() wywoływane po każdym pollStatus() — wykres żywy
+    - ResizeObserver na rps-chart — przerysowanie przy zmianie rozmiaru okna
+    - Grubsza linia (2px), label z aktualnym max na osi Y
 
-nas-web (1.2.3-1) unstable; urgency=medium
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 18:00:00 +0100
 
-  * Zabezpieczenie funkcji api_echo przed przekroczeniem bufora
-  * Poprawa obsługi błędów alokacji pamięci
-  * Dodanie mechanizmów obrony przed NULL w requestach API
-  * Usprawnienie generowania odpowiedzi JSON
-  * Aktualizacja nagłówków CORS dla endpointów
-  * Optymalizacja zarządzania pamięcią w odpowiedziach HTTP
+nas-web (2.2.33-1) stable; urgency=low
 
- -- Gekomod <zaba141@o2.pl>  Wed, 26 Jun 2024 14:30:00 +0200
+  * Modules — karty WAF Regex i WAF ModSecurity w gridzie modułów:
+    Ładowane dynamicznie z /np_waf_regex i /np_waf obok pozostałych.
+    Pokazują: status (aktywny/off), tryb (BLOCK/DETECT), liczniki,
+    liczbę reguł CRS, przyciski Włącz/Wyłącz i → Logi.
 
-nas-web (1.2.3) stable; urgency=medium
+  * Header — badge 'SECURED BY WAF' (kolor teal):
+    Pojawia się gdy co najmniej jeden WAF działa w trybie BLOCK.
+    Znika gdy WAF wyłączony lub tryb DETECT.
+    Tooltip: 'WAF aktywny — ruch filtrowany'.
 
-  * Aktualizacja systemu zarządzania pamięcią podręczną
-  * Optymalizacja obsługi żądań HTTP
-  * Dodanie obsługi HTTP/2
-  * Poprawki bezpieczeństwa w module SSL
-  * Dodanie wsparcia dla dodatkowych typów MIME
-  * Ulepszenia w logowaniu błędów
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 17:00:00 +0100
 
- -- Gekomod <zaba141@o2.pl>  Tue, 20 Jun 2023 14:30:00 +0200
+nas-web (2.2.32-1) stable; urgency=low
 
-nas-web (1.2.2) UNRELEASED; urgency=medium
+  * build-deb.sh — poprawka nazwy pakietu brotli:
+    libbrotlienc1 (Debian ≤11) vs libbrotli1 (Debian 12+ / Ubuntu 22+).
+    Auto-detekcja: sprawdza dpkg -l który jest zainstalowany,
+    fallback: 'libbrotli1 | libbrotlienc1'.
 
-  * Add SSL, Gzip, Error Page, Profiler
-  * Fix Bug
-  * Add New Options in config files
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 16:00:00 +0100
 
- -- root <root@zaba-iMac>  Sun, 20 Jul 2025 21:51:18 +0200
+nas-web (2.2.31-1) stable; urgency=low
 
-nas-web (1.2.1) unstable; urgency=medium
+  * build-deb.sh — poprawka pola Recommends w control:
+    dpkg wymaga przecinków między pakietami (nie spacji).
 
-  * fix config with port 80 is use
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 15:30:00 +0100
 
- -- Gekomod <zaba141@o2.pl>  Fri, 19 Jul 2025 18:40:00 +0200
+nas-web (2.2.30-1) stable; urgency=medium
 
-nas-web (1.2.0-1) unstable; urgency=medium
+  * Panel — naprawiony błąd classList null (TypeError line 1684):
+    Sekcje HTML AutoBan, WAF Regex, WAF ModSec w ogóle nie istniały
+    w pliku — wypadły podczas poprzednich edycji. Dodane z powrotem
+    jako prawidłowe div.section z id sec-autoban/sec-waf-regex/sec-waf.
+    show() zabezpieczony przed null: sprawdza czy element istnieje,
+    mapuje 'waf-regex' → 'sec-waf-regex'.
+    Dashboard onclick nie używa querySelector (może zwrócić null).
+    Nav-itemy AutoBan/WAF Regex/WAF ModSec przywrócone w sidebarze.
 
-  * [Nowa funkcja] Dodano pełną obsługę WebAssembly (WASM)
-  * [Poprawka] Naprawiono problem z odświeżaniem stron SPA
-  * [Optymalizacja] Zmniejszono zużycie pamięci serwera
-  * [Bezpieczeństwo] Zaktualizowano zależności OpenSSL
-  * [Infra] Dodano pliki konfiguracyjne systemd
+  * Blacklist persistence — adresy IP nie giną po restarcie:
+    /var/lib/nas-web/blacklist.txt — zapis przy każdej zmianie
+    (add/remove przez panel, ban z autoban/waf/waf_regex).
+    blacklist_load() przy starcie — ładuje poprzedni stan.
+    Config: blacklist_file /var/lib/nas-web/blacklist.txt (opcja).
+    debian: mkdir -p /var/lib/nas-web w package tree.
 
- -- Jan Kowalski <jan.kowalski@example.com>  Fri, 14 Jul 2023 16:30:00 +0200
+  * Connections — auto-refresh co 3s gdy zakładka aktywna:
+    setInterval startConnRefresh()/stopConnRefresh() przy show().
 
-nas-web (1.1.0-2) unstable; urgency=low
+  * build-deb.sh — wersja automatycznie z debian/changelog:
+    Parsuje pierwszą linię: 'nas-web (X.Y.Z-1) stable; ...'
+    Plik .deb: nas-web_X.Y.Z-1_amd64.deb
+    Flagi: --with-modsec (dodaje -DWITH_MODSEC=ON do cmake)
+           --no-rebuild (pomija cmake/make)
+    Auto-detekcja libmodsecurity3 w ldd → dodaje do Depends.
+    Tworzy /var/lib/nas-web/ w package tree.
 
-  * [Poprawka] Naprawiono błąd kompresji plików statycznych
-  * [Dokumentacja] Zaktualizowano pliki README
-  * [Infra] Dostosowano konfigurację dla Debian 11
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 15:00:00 +0100
 
- -- Jan Kowalski <jan.kowalski@example.com>  Wed, 5 Jul 2023 10:15:00 +0200
+nas-web (2.2.29-1) stable; urgency=medium
 
-nas-web (1.0.0-1) unstable; urgency=low
+  * ModSecurity — auto-discovery ścieżki reguł CRS:
+    Problem: domyślna ścieżka /etc/modsecurity/crs pusta na wielu
+    dystrybucjach (apt install modsecurity-crs instaluje do /usr/share/).
 
-  * Pierwsze wydanie pakietu Debian
-  * Dodano podstawową funkcjonalność serwera
-  * Obsługa frontendu Vue.js i backendu API
+    Rozwiązanie — waf.hh init() sprawdza po kolei:
+      /etc/modsecurity/crs          (ręczna instalacja)
+      /usr/share/modsecurity-crs    (apt install modsecurity-crs, Debian/Ubuntu)
+      /usr/share/modsecurity-crs/owasp-crs
+      /etc/modsecurity              (fallback)
+      /usr/local/modsecurity        (kompilacja ze źródeł)
 
- -- Jan Kowalski <jan.kowalski@example.com>  Mon, 3 Jul 2023 09:00:00 +0200
+    Pierwsze znalezione z plikami .conf używane automatycznie.
+    NW_INFO loguje którą ścieżkę wybrał auto-discovery.
+
+    Układy podkatalogów wspierane przez load:
+      rules_dir/rules/*.conf        (standardowy CRS)
+      rules_dir/*.conf              (flat layout)
+      rules_dir/owasp-crs/rules/    (alternatywny)
+
+    Błędy pojedynczych plików reguł: non-fatal (NW_WARN + kontynuuj).
+    Brak reguł: NW_WARN z konkretną radą apt install.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 14:00:00 +0100
+
+nas-web (2.2.28-1) stable; urgency=medium
+
+  * ModSecurity — auto-enable gdy skompilowano z WITH_MODSEC=ON:
+    np_config.hh: modsec_enabled domyślnie true (#ifdef WITH_MODSEC)
+    Nie trzeba już dodawać modsec_enabled on; do nas-web.conf
+
+  * Lepsze diagnostyki w waf.hh:
+    - rules_count w stats_json (ile reguł załadowano)
+    - NW_WARN gdy loaded_count==0 (brak reguł CRS)
+    - NW_INFO z liczbą załadowanych reguł
+
+  * Panel — czytelniejsze komunikaty statusu ModSec:
+    - BLOCK/DETECT baner: pokazuje rules_count (np. '1203 reguł')
+    - Baner błędu: pokazuje dokładny load_error z serwera
+    - Baner OFF: podpowiada 'modsec_enabled on;'
+    - Hint instalacyjny: apt install modsecurity-crs
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 13:00:00 +0100
+
+nas-web (2.2.27-1) stable; urgency=low
+
+  * Uproszczenie WAF stats — tylko kafelki na Dashboard:
+    - Usunięty wykres 'WAF Blocks last 60s'
+    - Usunięte liczniki blokad z header badges
+    - Header badges bez zmian: tylko tryb (BLOCK/DETECT/OFF)
+    - Dashboard: 4 kafelki WAF (blocked/detected/top threat/checked)
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 12:30:00 +0100
+
+nas-web (2.2.26-1) stable; urgency=low
+
+  * WAF statystyki — widoczne w 3 miejscach jednocześnie:
+
+    Header badges:
+    - Licznik blokad w nawiasie: 🔍 WAF BLOCK [42]
+    - Tooltip po najechaniu: tryb, blocked/detected/checked
+
+    Dashboard — 4 nowe kafelki (grid 4col, klikalny → zakładka WAF Regex):
+    - WAF Blocked (suma regex + modsec, czerwony)
+    - WAF Detected (detect-only events, fioletowy)
+    - Top Threat (dominująca kategoria: SQLi/XSS/etc., pomarańczowy)
+    - WAF Checked + aktywne tryby (niebieski)
+
+    Dashboard — wykres 'WAF Blocks — last 60s':
+    - Canvas chart, delta blokad co ~5s, 60 próbek
+    - Fill gradient czerwony + dots na spike'ach
+
+    Odświeżane co ~5s razem z pollStatus(), tylko gdy dashboard widoczny.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 12:00:00 +0100
+
+nas-web (2.2.25-1) stable; urgency=low
+
+  * Header — badges statusu WAF widoczne na każdej zakładce:
+    - 🔍 WAF BLOCK / DETECT / OFF — built-in regex engine
+    - 🛡 ModSec BLOCK / DETECT — gdy WITH_MODSEC=ON i loaded
+    - Kolor czerwony=BLOCK, fioletowy=DETECT, szary=OFF
+    - Tooltip z trybem i rules_dir po najechaniu
+    - Odświeżane razem z pollStatus() co ~5s
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 11:30:00 +0100
+
+nas-web (2.2.24-1) stable; urgency=high
+
+  * Bugfix waf.hh — API mismatch z rzeczywistym libmodsecurity3:
+    - msc_set_log_cb: callback void(*)(void*,const void*) nie (void*,int,const char*)
+    - msc_add_request_header: 3 argumenty (tx, key, value) nie 5 z size_t
+    - msc_get_modsecurity_version: nie istnieje — zamienione na literal '(v3)'
+  * Bugfix server.cc — bledy kompilacji WAF check:
+    - headers.entries → headers.items (rzeczywisty czlon struct Headers)
+    - h.name/h.value → h.first/h.second (std::pair nie struct z named fields)
+    - Literal newline w string hdr_str (blad zapisu pliku) → \r\n
+    - method_str() zwraca string_view → std::string() cast dla waf_regex.check()
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 11:00:00 +0100
+
+nas-web (2.2.23-1) stable; urgency=medium
+
+  * WAF warstwa 2 — wbudowane regex patterns (waf_regex.hh):
+    Aktywne domyslnie, zero zaleznosci zewnetrznych, kompiluje
+    wzorce przy starcie (std::regex::optimize).
+
+    6 kategorii / ~60 wzorcow:
+    - SQLi: tautologie OR/AND, UNION SELECT, stacked queries,
+      time-based blind (sleep/benchmark), out-of-band (load_file,
+      INTO OUTFILE), hex evasion, information_schema
+    - XSS: <script>, eventy onload/onerror, javascript:, eval(),
+      document.cookie, iframe/object/embed, CSS binding, encoded
+    - PathTraversal: ../ wszystkie warianty, URL/double encoded,
+      /etc/passwd, /proc/self, Windows UNC
+    - CmdInjection: shell metachar (;|& backtick), , /bin/sh,
+      PHP exec (system/passthru/proc_open), base64 payloads
+    - SSRF: localhost/127.x/169.254.169.254, AWS/GCP metadata,
+      file://, gopher/dict/ldap, private ranges jako URL
+    - XXE: <!ENTITY SYSTEM>, <!DOCTYPE [, xpath injection
+
+    URL-decode przed dopasowaniem (obejscie %XX evasion).
+    Sprawdza: path + query string + body (pierwsze 32KB).
+
+    Panel: nowa zakladka 'WAF Regex' z licznikami per-kategoria,
+    tabelą zdarzen, przelacznikiem block/detect, wylaczaniem body scan.
+
+    Konfiguracja w nas-web.conf:
+    waf_regex_enabled on/off (domyslnie on)
+    waf_regex_block   on/off (domyslnie on)
+    waf_regex_check_body on/off
+
+    Kolejnosc sprawdzania w dispatch():
+    1. AutoBan (scan paths, bad UA)
+    2. WAF Regex (SQLi/XSS/etc.) ← nowe
+    3. ModSecurity (jesli WITH_MODSEC=ON) ← v2.2.22
+    4. Rate limiter, routing
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 10:30:00 +0100
+
+nas-web (2.2.22-1) stable; urgency=medium
+
+  * WAF — opcjonalna integracja ModSecurity v3 (WITH_MODSEC=ON):
+
+    include/waf.hh — wrapper WafEngine nad libmodsecurity3 C++ API:
+    - msc_init, msc_create_rules_set, msc_rules_add_file
+    - Ladowanie crs-setup.conf + rules/*.conf z modsec_rules_dir
+    - msc_process_connection/uri/request_headers/request_body
+    - msc_intervention: wykrywanie blokad, ekstrakcja id/msg/severity
+    - Tryby: BLOCK (403) lub DETECT (tylko log)
+    - on_block callback: auto-blacklist IP + audit log
+    - stats_json(): last 50 zdarzen z regula, IP, URI, severity
+
+    server.cc:
+    - g_waf.init() w main() z konfigiem z nas-web.conf
+    - dispatch(): WAF check przed rate-limiterem (po autoban)
+    - /np_waf GET/POST endpoint (stats + toggle enabled/block_mode)
+
+    np_config.hh + config_parser.cc:
+    - modsec_enabled, modsec_block, modsec_rules_dir, modsec_conf
+
+    CMakeLists.txt: option(WITH_MODSEC OFF)
+    - find_library(modsecurity) + find_path(modsecurity/modsecurity.h)
+    - FATAL_ERROR z instrukcja apt install jesli WITH_MODSEC=ON bez lib
+
+    Panel — zakladka WAF:
+    - Status banner (loaded/detect/block/error z rules_dir)
+    - Liczniki: zablokowanych/wykrytych/sprawdzonych req
+    - Przelacznik Block/Detect bez restartu
+    - Tabela zdarzen: czas/IP/metoda/URI/regula/opis/severity
+    - Hint instalacyjny gdy WAF nie zaladowany
+
+    Konfiguracja w nas-web.conf (zakomentowane przyklady dodane).
+    Domyslnie OFF — zero kosztow gdy nie uzywane (#ifdef WITH_MODSEC).
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 10:00:00 +0100
+
+nas-web (2.2.21-1) stable; urgency=high
+
+  * ACME bugfix: order pozostaje 'pending' gdy auth jest cached-valid
+
+    Problem: gdy auth_status==valid, kod ustawial token='__already_valid__'
+    ale NIE wypelniał ch_url (zostawał pusty string). Nastepnie próba
+    POST {} do pustego ch_url (z v2.2.20) wysylala bledne zadanie.
+    Order nigdy nie dostawal sygnalu do przejscia pending→ready.
+
+    Fix:
+    - Wyciaganie ch_url z odpowiedzi auth ROWNIEZ gdy status==valid
+    - POST do ch_url z prawdziwym URL gdy auth cached (sygnalizuje LE
+      zeby przestawil order pending→ready)
+    - Order poll wydluzony do 60x5s = 5 minut dla cached-auth
+      (LE moze byc asynchroniczny przy przejsciu statusu)
+    - Komunikat bledu ulepszone: podaje ile czasu czekano
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 09:00:00 +0100
+
+nas-web (2.2.20-1) stable; urgency=high
+
+  * ACME bugfix: order 'pending' → 403 orderNotReady przy finalizacji
+
+    Root cause 1 — brak return po timeout order poll:
+    Po 15 nieudanych probach (order nadal pending) kod kontynuowal
+    do finalize() bez sprawdzenia wyniku petli — stad 403.
+    Fix: dodano bool order_ready + return z czytelnym komunikatem.
+
+    Root cause 2 — cached auth nie triggeruje order transition:
+    Gdy auth_url zwracal status=valid (LE cache), kod skipowal
+    wyslanie POST {} do ch_url. LE potrzebuje tego POST zeby
+    przestawic order status pending→ready mimo ze auth juz valid.
+    Fix: POST do ch_url wyslany rowniez przy cached auth.
+
+    Root cause 3 — za krotki timeout i za maly odstep:
+    15x2s = 30s — za malo dla wolnych DNS lub obciazonego LE.
+    Fix: 30x3s = 90s (rowne z auth poll), zwiekszony headstart
+    5s dla cached-auth przed rozpoczeciem order poll.
+
+    Bonus: usunieto zduplikowana linie 'Auth timed out' z acme.cc.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 08:30:00 +0100
+
+nas-web (2.2.19-1) stable; urgency=high
+
+  * Bugfix: brakujace } zamykajace for(auto& l : srv.listens)
+    w bloku inicjalizacji SSL workerow w main().
+    Powodowalo ze workers/ready_count/threads byly w blednym scope.
+    Usunieto rowniez falszywy } catch ktory wstawiono w v2.2.18.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 07:45:00 +0100
+
+nas-web (2.2.18-1) stable; urgency=high
+
+  * Bugfix: brakujacy '} catch' zamykajacy blok try{} w main()
+    (otwarty przy parsowaniu configu, nigdy nie zamkniety)
+    Powodowal 'expected }' at end of input na linii ostatniej }
+    Fix: dodano } catch(std::exception& e) { return 1; }
+    po petli for(workers) przed while(ready_count)
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 07:30:00 +0100
+
+nas-web (2.2.17-1) stable; urgency=high
+
+  * Bugfix: brakujacy nawias } w write_response() powodujacy blad kompilacji
+    'function-definition is not allowed here before { token'
+    Root cause: niepoprawne wciecie zamkniecia if(conn->worker){} bloku
+  * Bugfix: usunieto resztkowy generate_selfsigned_ctx() z v2.2.13
+    (zostal przez nieuwage przy rewercie v2.2.14) — powodowal warning
+    i martwy kod z bledem logiki ssl_cert.empty()
+  * Bugfix: autoban.hh: naprawiono Wmisleading-indentation
+    w stats_json() (if(!first) j+=','; first=false; rozdzielone)
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 07:00:00 +0100
+
+nas-web (2.2.16-1) stable; urgency=low
+
+  * AutoBan: wylaczone domyslnie rate_limit i 404_flood
+    (aktywne tylko: scan_paths + bad_ua zgodnie z wyborem)
+    Mozna wlaczyc w panelu AutoBan bez restartu serwera.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 06:15:00 +0100
+
+nas-web (2.2.15-1) stable; urgency=medium
+
+  * AutoBan — automatyczne wykrywanie i blokowanie zagrozen:
+
+    include/autoban.hh — silnik detekcji (thread-safe):
+    - Scan path: 60+ wzorcow (.env .git wp-login xmlrpc php shell
+      .aws/credentials traversal itp.) — ban po 3 trafieniach
+    - Rate limit: ban po N req/30s z jednego IP (domyslnie 30/s)
+    - 404 flood: ban po 12 bledach 404 w oknie 30s
+    - Bad User-Agent: 30+ sygnatur (nikto nmap masscan nuclei
+      sqlmap dirbuster gobuster burpsuite acunetix i inne)
+    - Prywatne IP (192.168. 10. 172.16-31. 127.0.0.1) nigdy nie banowane
+    - on_ban callback: dodaje IP do g_blacklist + audit log + NW_WARN
+
+    server.cc:
+    - autoban_check() w dispatch() przed rate-limiterem
+    - 404 feed-back do autoban po response
+    - /np_autoban GET/POST endpoint (stats + config runtime)
+
+    Panel — zakładka AutoBan:
+    - Liczniki: zbanowanych IP / zablokowanych req / sledzonych IP
+    - Konfiguracja progow przez UI z zapisem do serwera
+    - Tabela ostatnich banow (50 wpisow): czas/IP/powod/szczegoly
+    - Przycisk unban per-IP, wylaczenie/wlaczenie, czyszczenie stats
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 06:00:00 +0100
+
+nas-web (2.2.14-1) stable; urgency=medium
+
+  * Cofnieto PWA i self-signed SSL (wymagaja HTTPS)
+  * Mobile CSS — poprawiony i scalony:
+    - Usuniety duplikat bloku @media (max-width:768px)
+    - Hamburger + slide-in sidebar (z v2.2.11, bez zmian)
+    - Dodane brakujace poprawki:
+      input.log-search width:100% na mobile
+      .login-card 92vw na malych ekranach
+      .log-toolbar flex-wrap
+      conn-table-wrap overflow-x:auto (tabela polaczen)
+      .sec-header flex-wrap, font-size mniejszy
+    - @media 480px: stat-grid 1 kolumna, .log-lv ukryty,
+      .logo-ver ukryty, padding mniejszy, przyciski mniejsze
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 05:30:00 +0100
+
+nas-web (2.2.13-1) stable; urgency=medium
+
+  * PWA bez SSL: auto self-signed cert przy starcie
+    - generate_selfsigned_ctx() — RSA-2048 + X.509 generowany
+      w pamieci przez OpenSSL API (bez plikow, bez system())
+    - Jesli config ma 'listen 443 ssl;' ale brak ssl_cert/ssl_key,
+      serwer automatycznie generuje self-signed cert wazny 10 lat
+    - CN = server_name z configa lub 'nas-web'
+    - Uzytkownik akceptuje ostrzezenie przegladarki RAZ,
+      potem PWA dziala normalnie (Chrome zapamietuje wyjatek)
+    - conf/nas-web.conf: 'listen 443 ssl;' wlaczone domyslnie
+      z komentarzem jak przejsc na prawdziwy cert
+    - Logi: INFO self-signed generated + WARN o browser exception
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 05:00:00 +0100
+
+nas-web (2.2.13-1) stable; urgency=medium
+
+  * Self-signed TLS — automatyczny certyfikat przy starcie:
+    Wystarczy 'listen 443 ssl;' w configu bez ssl_cert/ssl_key.
+    Serwer generuje RSA-2048 + X.509 w pamieci (OpenSSL EVP API),
+    wazny 10 lat, SAN: nas-web.local, localhost, 127.0.0.1.
+    Przeglądarka pokazuje ostrzezenie bezpieczenstwa — kliknij
+    Zaawansowane > Przejdź (raz, potem akceptowane).
+    Na Android: Ustawienia > Bezpieczenstwo > Zainstaluj cert
+    lub po prostu kliknij wyjątek — PWA działa po HTTPS.
+  * conf/nas-web.conf: dodano przykladowy 'listen 443 ssl;'
+    z komentarzem po polsku
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 05:00:00 +0100
+
+nas-web (2.2.12-1) stable; urgency=medium
+
+  * PWA (Progressive Web App) — dziala jak natywna apka na Android:
+    - /np_admin/manifest.json — Web App Manifest (name, icons,
+      theme_color=#00d4aa, display=standalone, scope=/np_admin)
+    - /np_admin/sw.js — Service Worker: cache-first dla HTML,
+      network-first dla API (/np_*), offline fallback JSON
+    - /np_admin/icon-{72,96,128,144,152,192,384,512}.png —
+      ikony wbudowane w binary (pwa_assets.h), brak plikow zewnetrznych
+    - HTML: <link rel=manifest>, <meta theme-color>, apple-touch-icon,
+      rejestracja SW, banner instalacyjny (beforeinstallprompt)
+    - Na Android Chrome: przycisk "Dodaj do ekranu glownego"
+      instaluje panel jako fullscreen standalone app
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 04:30:00 +0100
+
+nas-web (2.2.11-1) stable; urgency=medium
+
+  * Mobile responsive panel — wersja mobilna naprawiona:
+    - Hamburger menu (#nav-toggle) ukryty na desktop,
+      widoczny na mobile (<=768px)
+    - Sidebar jako slide-in drawer z overlay (position:fixed,
+      z-index:30), zamykany klikniecem w overlay lub nav-item
+    - Media queries @media (max-width:768px) i (max-width:480px):
+      gridy stat/worker/cache/sysinfo/modules/chart -> 1fr
+      header compact, .hdr-time ukryty, log-box nizszy
+      config-area nizszy, log-ip ukryty na <=480px
+    - Animacja hamburgera (3 kreski -> X przy otwarciu)
+    - body.nav-open klasa kontroluje stan menu
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 04:00:00 +0100
+
+nas-web (2.2.10-1) stable; urgency=critical
+
+  * Fix: DEADLOCK blokujacy caly serwer — kazdy request do /np_stats
+    (lub dowolny inny) powodowal zawieszenie wszystkich watkow.
+
+    Root cause: write_response() trzymalo g_active_mu (lock_guard
+    linia ~450), a wewnatrz tego samego bloku probowal wziac
+    g_active_mu DRUGI RAZ (linia ~497, przy push stats history).
+    std::mutex nie jest rekurencyjny — drugi lock() na tym samym
+    watku blokuje na zawsze.
+
+    Naprawa: usuniety blok "Update req/s every second" z
+    write_response(). Stats history jest aktualizowane wylacznie
+    przez timer per-sekundowy (ktory nie trzyma g_active_mu
+    w tym momencie). Brak zmiany w zachowaniu dashboardu —
+    dane i tak byly zbierane raz na sekunde.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 03:30:00 +0100
+
+nas-web (2.2.9-1) stable; urgency=high
+
+  * Fix: /np_stats /np_audit /np_acme_diag zawsze pending
+    Root cause: zamkniecie klamry if(is_admin_path()){ bylo
+    na linii 1447 — przed handlerami np_stats/np_audit/np_acme_diag.
+    Te handlery lezaly POZA blokiem is_admin_path, wiec nie
+    dostawaly conn->req.keep_alive = false. Po write_response
+    serwer czekal na kolejny request na tym samym polaczeniu
+    (keep-alive) — przeglądarka widziala request jako pending
+    bo polaczenie nigdy sie nie zamykalo.
+    Naprawa: zamkniecie bloku is_admin_path przeniesione
+    za wszystkie handlery (linia ~1570).
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 03:00:00 +0100
+
+nas-web (2.2.8-1) stable; urgency=high
+
+  * Fix: Dashboard blokuje strone (858 requestow pending, 7.2 min)
+    Root cause: HTTP/1.1 ma limit 6 polaczen per origin.
+    /np_logs/stream (SSE) zajmowal 1 slot na stale + agresywny
+    polling (co 3s: dashboard + logs + status + connections)
+    = kolejka pending na zawsze.
+
+    Naprawy:
+    1. SSE wyłączone (było UB: uv_write z obcego wątku bez
+       synchronizacji z libuv event loop). /np_logs/stream
+       zwraca teraz 204. Logi w panelu przez polling /np_logs.
+    2. Timery globalne (fetchAll, addAccessLog, fetchServerLogs)
+       zmienione: 3s->5-6s i aktywne TYLKO gdy dana zakładka
+       jest widoczna (classList.contains active).
+    3. Dashboard timer: 5s->10s, clearInterval przy każdej
+       wizycie (brak stackowania timerow).
+    4. Logs tab: usunięto startSSELog(), fetchServerLogs co 4s
+       zamiast stałego połączenia SSE.
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 02:30:00 +0100
+
+nas-web (2.2.7-1) stable; urgency=medium
+
+  * Fix: /np_stats i /np_logs czytaly query string z req.path
+    Parser HTTP odcina query do req.query — find("?") nigdy nie
+    znajdowal parametrow. Wszystkie 3 endpointy naprawione:
+    /np_stats (count=), /np_logs (level=,since=,limit=),
+    /np_acme_diag (domain=)
+  * Debian: control — dodano libbrotli-dev (Build-Depends)
+    i libbrotli1, zlib1g (Depends); opis pakietu rozszerzony
+  * Debian: rules — dodano -DWITH_BROTLI=ON
+  * Debian: dirs — dodano /var/log/nas-panel
+  * Debian: postinst — tworzy oba katalogi logow, dotyka plikow
+    logow, sprawdza systemctl w /bin i /usr/bin
+  * Debian: postrm — czysci /run/nas-web.pid, reload systemd
+  * Debian: prerm — sprawdza systemctl w obu sciezkach
+  * Debian: README.Debian — pelna dokumentacja PL z sekcja ACME
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 02:00:00 +0100
+
+nas-web (2.2.6-1) stable; urgency=medium
+
+  * Fix: /np_stats i /np_audit zwracaly strone Vue (Vite+Vue+TS)
+    Przyczyna: handlery tych endpointow byly umieszczone ZA blokiem
+    location matching, ktory lapie / jako SPA fallback do Node.js
+    Naprawa: /np_stats /np_audit /np_acme_diag /np_logs/stream
+    przeniesione przed location matching (razem z pozostalymi /np_* handlerami)
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 01:40:00 +0100
+
+nas-web (2.2.5-1) stable; urgency=medium
+
+  * Fix: toggleFeature() wysylalo {feature:id} zamiast {module:id}
+    — backend /np_features szuka klucza "module" nie "feature"
+  * Fix: Dashboard pusty przy braku historii — pokazuje komunikat
+    "Zbieranie danych" i seeduje biezacym stanem z /np_status
+  * Fix: TLS/SSL nota dynamiczna — gdy ssl_ctx==null wyswietla
+    jasny komunikat o brakujacym certyfikacie zamiast mylacej
+    informacji "wymaga config"
+  * Info: TLS off = brak ssl_cert/ssl_key w configu (poprawne zachowanie)
+  * Info: ACME off = module_acme:false w configu (poprawne zachowanie)
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 01:20:00 +0100
+
+nas-web (2.2.4-1) stable; urgency=medium
+
+  * Fix: brakujaca funkcja toggleFeature() w panelu Modules
+  * Fix: duplikat ID chart-rps (span w Overview + canvas w Dashboard)
+    — canvas zmienione na dash-chart-{rps,lat,err,conn}
+  * Fix: konflikt nazwy drawChart() — stara funkcja Overview
+    przemianowana na drawRpsChart()
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 01:00:00 +0100
+
+nas-web (2.2.3-1) stable; urgency=medium
+
+  * Fix: fread() warning — wynik zapisywany do nr, null-terminator ustawiany poprawnie
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 00:45:00 +0100
+
+nas-web (2.2.2-1) stable; urgency=medium
+
+  * Fix: acme_http() brakujący 6. parametr — dodano opcjonalny extra_header
+  * Fix: wywołania cf_add_txt/cf_del_txt poprawione (auth jako Authorization header)
+  * Fix: fread() return value ignorowany — dodano (void) cast
+  * Fix: qi unused variable w /np_stats handler
+  * Fix: misleading-indentation w pętlach np_stats i np_audit
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 00:30:00 +0100
+
+nas-web (2.2.1-1) stable; urgency=medium
+
+  * Fix: niezaescapowane cudzysłowy w JSON payload Cloudflare API (cf_add_txt)
+  * Fix: niezaescapowane cudzysłowy w exec_dns cmd
+  * Fix: serialize_h1_no_body() nie istniało — dodano serialize_h1_headers_only()
+    do struct Response w np_types.hh dla SSE endpoint /np_logs/stream
+
+ -- NAS Panel Team <admin@localhost>  Mon, 09 Mar 2026 00:15:00 +0100
+
+nas-web (2.2.0-1) stable; urgency=medium
+
+  * Dashboard: nowa zakładka z wykresami req/s, latencja avg [ms],
+    błędy/s, aktywne połączenia — Canvas API bez zewnętrznych bibliotek
+    Historia do 1h (ring buffer 3600 próbek co 1s), timerange 2min/10min/1h
+  * Audit log: /np_audit endpoint + zakładka Audit — każda zmiana przez panel
+    zapisywana z timestamp/IP/akcją: config_save, toggle_module, upstream_add,
+    blacklist_add, reload, acme_obtain — ring buffer 500 wpisów
+  * SSE live log: /np_logs/stream (text/event-stream) — zamiast pollowania
+    co 3s, logi pojawiają się natychmiast; LogBuffer::sse_broadcast callback;
+    fetch() z ReadableStream po stronie JS (EventSource nie wspiera auth)
+  * IP Allowlist dla panelu: admin_allow_ips w konfiguracji — prefix match
+    "192.168.1." lub dokładne IP; 403 dla nieautoryzowanych; log WARN z IP
+  * Security headers dla /np_admin: X-Frame-Options: DENY, X-Content-Type-Options,
+    Referrer-Policy, Permissions-Policy, Cache-Control: no-store
+  * /np_status: dodano client_ip i admin_allowlist_size w odpowiedzi JSON
+  * /np_stats: nowy endpoint — historia próbek (ts,rps,eps,cache,conns,lat)
+    parametr ?count=N (domyślnie 120, max 3600)
+  * /np_acme_diag: non-blocking connect port 80 z 3s timeout — sprawdza
+    czy domena jest dostępna przed próbą certyfikatu; przycisk w panelu SSL
+  * ACME DNS-01: kompletna implementacja — Cloudflare API (auto-detect zone,
+    add/delete TXT record) + exec hook (dowolny skrypt add|remove DOMAIN VALUE)
+    Wildcard certy: domains *.nasserver.pl nasserver.pl; challenge dns-01;
+    Konfiguracja: dns_provider cloudflare|exec; dns_cf_token; dns_cf_zone;
+    DNS-01 nie wymaga portu 80 — działa za NAT/firewallem
+  * Propagacja DNS: 65s czekania przed notify LE (wymagane przez spec)
+  * Skrypt przykładowy: scripts/dns-hook-example.sh (nsupdate + curl CF)
+  * Stats history: g_stat_latency_sum/cnt — rolling avg latencji z duration_ms
+    każdego ukończonego żądania; push do g_stats_hist co sekundę
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 23:59:00 +0100
+
+nas-web (2.1.7-1) stable; urgency=high
+
+  * Fix ACME: "Auth invalid" — Let's Encrypt cache'uje autoryzacje 30 dni.
+    Jeśli poprzednia próba skończyła się invalid, kolejna próba dostaje
+    tę samą "zatrutą" auth. Dodano wykrywanie statusu auth PO pobraniu
+    (przed wysłaniem challenge): jeśli status=invalid/revoked — zwracamy
+    czytelny komunikat z 3 krokami diagnostyki zamiast ogólnego błędu
+  * Fix ACME: jeśli auth jest już "valid" (cache 30-day) — pomijamy
+    kroki 6-8 (challenge serve/notify/poll) i przechodzimy od razu do
+    poll order → finalize
+  * Panel ACME: błąd wyświetlany jako sformatowany blok z pre-wrap,
+    ukryty gdy brak błędu; widoczny komunikat "Auth invalid (LE cached
+    30-day auth). Sprawdz: 1. port 80... 2. DNS... 3. Rate limit..."
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 23:00:00 +0100
+
+nas-web (2.1.6-1) stable; urgency=low
+
+  * Logs: usunięto panel "HTTP Access Log" (duplikat zakładki Connections)
+  * Logs: zostaje tylko Server Log (ring buffer /np_logs) + Pliki logów
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 22:30:00 +0100
+
+nas-web (2.1.5-1) stable; urgency=medium
+
+  * Panel Logs: przepisany zakładka Logs — 3 panele zamiast 2:
+    1. HTTP Access Log — pobiera historię requestów z /np_connections
+       (ostatnie 200 żądań), kolumny: czas, IP, metoda, ścieżka,
+       status, latencja [ms], typ (proxy/static/ws)
+       metoda kolorowana (GET=niebieski, POST=pomarańczowy, DELETE=czerwony)
+    2. Server Log — ring buffer /np_logs (500 wpisów), kolumny: czas,
+       level z ikoną, moduł kolorowany per typ (acme=żółty, tls=turkus,
+       proxy=niebieski, cache=pomarańczowy itd.), wiadomość
+       filtry ERROR/WARN/INFO/DEBUG + szukaj po module i treści
+    3. Pliki logów — /np_logfile access/error/warn/info/debug ostatnie 300 linii
+  * Panel Logs: auto-refresh co 3s gdy zakładka aktywna (timer sprawdza classList)
+  * Panel Logs: filtrowanie HTTP access per metoda, status code, ścieżka/IP
+  * Panel Logs: filtrowanie server log per level + tekst wyszukiwania
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 22:00:00 +0100
+
+nas-web (2.1.4-1) stable; urgency=high
+
+  * Fix build: cudzysłowy w JSON string literals acme.cc nie były
+    escape'owane (\") — Python zapisał je jako nagie " powodując błędy
+    "inconsistent user-defined literal suffixes" w g++
+  * Fix build: safe_obtain() było private — przeniesiono do sekcji public
+  * Fix build: jarr_first() unused warning — dodano -Wno-unused-function
+    do cmake lub zmieniono użycie na inline
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 21:00:00 +0100
+
+nas-web (2.1.3-1) stable; urgency=high
+
+  * Fix ACME: dwa równoległe wywołania obtain_cert() (renew_loop + manual)
+    powodowały konflikt nonce i podwójny finalize — dodano obtaining_ atomic
+    flag i safe_obtain() wrapper który blokuje drugie wywołanie
+  * Fix ACME: renew_loop startował po 1 minucie; zmieniono na 5 minut żeby
+    uniknąć kolizji z ręcznym żądaniem przy starcie; interwał 12h → co 1s×43200
+  * Fix ACME: poll order status przed finalize — nowa wersja obtain_cert()
+    z kompletnym 13-krokowym flow RFC 8555 (Step 9: poll order → ready)
+  * Fix ACME: brace-matching przy parsowaniu obiektu http-01 challenge
+  * Fix ACME: 2s opóźnienie przed notify LE (challenge musi odpowiadać)
+  * ACME: progress tracking — get_progress() zwraca step/pct/last_error/last_ok
+  * ACME: /np_acme GET zwraca running/step/pct/last_error/last_ok
+  * Panel SSL: progress bar podczas uzyskiwania certyfikatu (auto-refresh 2s)
+  * Panel SSL: pola "Ostatnie OK" i "Błąd" w karcie statusu ACME
+  * Panel SSL: przycisk Pobierz uruchamia polling progressu natychmiast
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 20:30:00 +0100
+
+nas-web (2.1.2-1) stable; urgency=high
+
+  * Fix ACME: błąd "orderNotReady" / 403 przy finalizacji — finalize był
+    wywoływany zaraz po auth=valid, bez czekania aż order przejdzie
+    pending → ready (RFC 8555 §7.4)
+  * Fix ACME: dodano krok 9 — poll order status przed finalize, czeka
+    aż status = "ready" (maks. 10 prób × 2s)
+  * Fix ACME: refaktor obtain_cert() — helper post_jws() automatycznie
+    aktualizuje nonce po każdym żądaniu, wyeliminowano race condition
+  * Fix ACME: helper fresh_nonce() — HEAD z fallback na GET
+  * Fix ACME: parse challenge — brace-matching zamiast rfind('{') dla
+    poprawnej ekstrakcji obiektu http-01 z zagnieżdżonego JSON
+  * Fix ACME: 1s opóźnienie przed notify LE (challenge musi być gotowy)
+  * Fix ACME: weryfikacja PEM w odpowiedzi cert download (BEGIN CERTIFICATE)
+  * Fix ACME: chmod 0644 na fullchain.pem po zapisie
+  * ACME: szczegółowe logi każdego kroku (auth status, order status,
+    finalize status, cert URL poll) — widoczne przez /np_logs
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 19:30:00 +0100
+
+nas-web (2.1.1-1) stable; urgency=high
+
+  * Fix: przycisk Włącz/Wyłącz modułów nie działał — api() zwraca JSON
+    nie obiekt Response, więc r.ok był zawsze undefined; poprawiono na
+    sprawdzanie r !== null w toggleFeature(), acmeObtain(), saveConfig()
+  * Fix: duplikaty funkcji toggleFeature i acmeObtain w panelu usunięte
+  * Fix: refreshAcme() miała błędny ciało (kopiowany fragment toggle)
+  * Fix: ACME toggle teraz faktycznie startuje/zatrzymuje AcmeClient
+    w pamięci — bez restartu serwera (g_acme.reset() / acme_init())
+  * Build: dodano WITH_ACME=ON do cmake w build-deb.sh (domyślnie ON)
+  * Build: dodano WITH_BROTLI=ON jawnie do build-deb.sh
+  * CMakeLists: nowa opcja WITH_ACME, define HAVE_ACME, guard w server.cc
+  * Panel Modules zakładka Pomysły: rozbudowana do 12 propozycji modułów
+    (HTTP/3, mTLS, Prometheus, streaming upload, JWT, Wasm, GeoIP,
+    ModSecurity WAF, audit log, mirror traffic, SSE broker, Python)
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 18:30:00 +0100
+
+nas-web (2.1.0-1) stable; urgency=medium
+
+  * Load balancer: 4 strategie (least_conn, round_robin, weighted_rr, ip_hash)
+  * Load balancer: serwery backup, per-backend statystyki (req, err, avg_latency)
+  * Load balancer: dyrektywy backup, max_fails, fail_timeout, weight per serwer
+  * ACME / Let's Encrypt: pełny klient ACMEv2 (HTTP-01 challenge, RSA-2048, CSR)
+  * ACME: auto-odnowienie certyfikatu w tle gdy <30 dni do wygaśnięcia
+  * ACME: endpoint /np_acme (GET status, POST obtain/renew/check)
+  * ACME: blok konfiguracyjny acme { enabled, email, domains, staging, cert_dir }
+  * ACME: panel w zakładce SSL/TLS z kartą statusu i przyciskiem odnowienia
+  * Graceful reload: atomowa zamiana config (shared_ptr) per worker bez restartu
+  * Graceful reload: aktywne połączenia kończą z poprzednim configiem
+  * Graceful reload: po odnowieniu certyfikatu ACME automatyczny SIGHUP
+  * Virtual hosts: routing po nagłówku Host, wildcard *.example.com
+  * Virtual hosts: default_server, fallback do pierwszego bloku
+  * Virtual hosts: match_server() w Config z obsługą SNI
+  * Feature flags: module_cache, module_ratelimit, module_lua, module_js,
+    module_gzip, module_acme, module_lb_healthcheck — toggle w runtime
+  * Feature flags: endpoint /np_features (GET wszystkie, POST toggle pojedynczy)
+  * Feature flags: egzekwowane w dispatch (rate limiter, middleware, gzip, cache)
+  * Admin panel Modules: karty z ikonami, opisem, przyciskiem Włącz/Wyłącz
+  * Admin panel Modules: zakładki Wbudowane / Konfiguracja / Lua snippets / Pomysły
+  * Admin panel SSL: sekcja ACME z konfiguracją i statusem certyfikatu
+  * Config parser: upstream strategy, sticky, backup, health_check expect=N
+  * Config parser: try_files, health_check per lokacja, error_page per serwer
+  * Fix: /np_module zwraca tablicę zamiast obiektu (data.modules.map)
+  * Fix: OpenSSL 3.0 — zastąpiono EVP_PKEY_get1_RSA/RSA_get0_key przez
+    EVP_PKEY_get_bn_param (eliminuje deprecated warnings)
+  * Fix: apostrof w JS string literal przerywający parser (Let's Encrypt label)
+  * Fix: /np_logfile czyta req.query zamiast parsować '?' z req.path
+
+ -- NAS Panel Team <admin@localhost>  Sun, 08 Mar 2026 16:00:00 +0100
+
+nas-web (2.0.0-1) stable; urgency=medium
+
+  * Initial release of nas-web (renamed from nodeproxy)
+  * Built-in health endpoints: /apis/healths, /apis/heartbeat, /apis/ping
+  * Admin panel at /np_admin with Basic Auth protection
+  * HTTP/2 support via nghttp2
+  * Lua 5.4 scripting middleware
+  * LRU response cache with RFC 7234 compliance
+  * Token bucket rate limiter per IP
+  * WebSocket proxying support
+  * Static file serving with gzip, ETag, Range support
+  * SPA fallback routing
+  * Graceful shutdown via SIGTERM/SIGINT (uv_walk)
+  * Hot config reload via SIGHUP
+  * X-Request-ID tracing header
+  * systemd service with auto-restart
+
+ -- NAS Panel Team <admin@localhost>  Sat, 07 Mar 2026 20:00:00 +0100
+
+nas-web (1.0.0-1) stable; urgency=low
+
+  * Initial nodeproxy v1 — basic reverse proxy in C++20 + libuv
+
+ -- NAS Panel Team <admin@localhost>  Mon, 01 Jan 2026 00:00:00 +0100
+
+
+  * Initial release of nas-web (renamed from nodeproxy)
+  * Built-in health endpoints: /apis/healths, /apis/heartbeat, /apis/ping
+  * Admin panel at /np_admin with Basic Auth protection
+  * HTTP/2 support via nghttp2
+  * Lua 5.4 scripting middleware
+  * LRU response cache with RFC 7234 compliance
+  * Token bucket rate limiter per IP
+  * WebSocket proxying support
+  * Static file serving with gzip, ETag, Range support
+  * SPA fallback routing
+  * Graceful shutdown via SIGTERM/SIGINT (uv_walk)
+  * Hot config reload via SIGHUP
+  * X-Request-ID tracing header
+  * systemd service with auto-restart
+
+ -- NAS Panel Team <admin@localhost>  Sat, 07 Mar 2026 20:00:00 +0100
+
+nas-web (1.0.0-1) stable; urgency=low
+
+  * Initial nodeproxy v1 — basic reverse proxy in C++20 + libuv
+
+ -- NAS Panel Team <admin@localhost>  Mon, 01 Jan 2026 00:00:00 +0100
