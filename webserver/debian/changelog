@@ -1,3 +1,475 @@
+nas-web (2.2.77-1) stable; urgency=low
+
+  * Powrót do oryginalnego panelu (porzucono wersję DEV).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 23:50:00 +0100
+
+nas-web (2.2.76-1) stable; urgency=low
+
+  * DEV: nowy layout panelu (DirectAdmin-style sidebar) jako admin_panel.h.
+    Pełna funkcjonalność zachowana. Wersja testowa — stary panel w git.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 23:30:00 +0100
+
+nas-web (2.2.75-1) stable; urgency=low
+
+  * Panel: wersja w headerze pobierana dynamicznie z /np_status (pole version)
+    zamiast hardkodowanego v2.0.0. Aktualizuje się przy każdym fetchAll().
+  * Panel: header WAF — usunięte osobne badges (🔍 BLOCK / 🛡 ModSec BLOCK),
+    zostaje tylko 🛡 SECURED BY WAF gdy co najmniej jeden WAF jest w trybie BLOCK.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 23:00:00 +0100
+
+nas-web (2.2.74-1) stable; urgency=low
+
+  * Wersja binary teraz zsynchronizowana z debian/changelog:
+    CMakeLists.txt project(VERSION) i NP_VERSION w np_types.hh
+    są teraz pobierane z makra NAS_WEB_VERSION przekazywanego przez CMake.
+    nas-web --version będzie pokazywać właściwą wersję.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:50:00 +0100
+
+nas-web (2.2.73-1) stable; urgency=low
+
+  * WAF ModSecurity: dodano log przy starcie pokazujący enabled/block/rules_dir
+    żeby łatwiej diagnozować czy WAF jest aktywny.
+  * SSL error 1: wyciszony dla typowych przypadków (boty/skanery).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:40:00 +0100
+
+nas-web (2.2.72-1) stable; urgency=low
+
+  * SSL error 1 (Handshake failed) — wyciszony dla typowych przypadków:
+    boty/skanery zrywają TLS przed końcem handshake (unexpected EOF,
+    unknown protocol, no shared cipher, wrong version). Te błędy są
+    normalne i nie wskazują na problem serwera — logowanie tylko śmieciło.
+    Poważne błędy TLS nadal są logowane jako WARN.
+
+  * ACME działa poprawnie (v2.2.70-71).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:30:00 +0100
+
+nas-web (2.2.71-1) stable; urgency=low
+
+  * jarr_all nie było dodane do pliku (replace nie pasował).
+    Dodane ręcznie przed definicją klasy AcmeClient.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:25:00 +0100
+
+nas-web (2.2.70-1) stable; urgency=critical
+
+  * ACME — GŁÓWNA PRZYCZYNA: order ma DWA authz (nasserver.pl + www.nasserver.pl).
+    Kod obsługiwał tylko pierwsze (jarr_first). Drugie (www) zostawało pending
+    i blokowało cały order — order jest ready dopiero gdy WSZYSTKIE authz są valid.
+    Fix: pobierz wszystkie authz URLs z order (jarr_all), iteruj po każdej,
+    zaserwuj token HTTP-01 i potwierdź challenge dla każdej authz osobno.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:20:00 +0100
+
+nas-web (2.2.69-1) stable; urgency=medium
+
+  * ACME diagnostyka: logowanie pełnego order body przy tworzeniu.
+    Według RFC 8555 order pending→ready gdy WSZYSTKIE authz są valid.
+    Logi pokażą ile authz ma order i jakie są ich URL-e.
+    Podejrzenie: order ma więcej niż jedną authz lub LE ma bug.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:10:00 +0100
+
+nas-web (2.2.68-1) stable; urgency=high
+
+  * ACME — order pending: właściwa diagnoza (ostateczna):
+    Gdy authz zwraca status=valid, to jest stara authz z poprzedniego order
+    (LE reuse'uje authz URL przez 30 dni). Ale NOWY order ma własną kopię
+    authz która wewnętrznie jest pending i wymaga fresh challenge.
+    Poprzednie wersje ustawiały auth_valid=true i pomijały serwowanie tokenu
+    — przez co LE nie mogło zweryfikować challenge dla nowego order.
+    Fix: gdy auth=valid (cached), rób PEŁNY flow HTTP-01: wyciągnij token
+    z authz response, zaserwuj go przez .well-known, POST challenge, czekaj.
+    auth_valid pozostaje false dopóki LE nie potwierdzi weryfikacji.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 22:00:00 +0100
+
+nas-web (2.2.67-1) stable; urgency=high
+
+  * ACME finalize retry — poprzedni fix nie trafił do pliku (str.replace
+    nie pasował). Tym razem użyto str_replace z dokładnym dopasowaniem.
+    Finalize ma teraz pętlę 15x5s na orderNotReady.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 21:45:00 +0100
+
+nas-web (2.2.66-1) stable; urgency=high
+
+  * ACME — order pending mimo authz valid:
+    Order poll skrócony do 6x3s=18s. Jeśli order nadal pending po tym
+    czasie (LE czasem nie przełącza od razu), próbujemy finalize bezpośrednio.
+    Finalize ma teraz retry loop 10x5s na orderNotReady — tak jak acme.sh.
+    LE zazwyczaj akceptuje finalize w ciągu kilku sekund od valid authz
+    nawet jeśli order jeszcze pokazuje pending.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 21:30:00 +0100
+
+nas-web (2.2.65-1) stable; urgency=high
+
+  * ACME — cached auth flow nigdy nie wchodził do else branch:
+    auth_status=valid ustawiał token='__already_valid__' ale NIE ustawiał
+    auth_valid=true. if(!auth_valid) = true więc szedł do starego bloku
+    HTTP-01 gdzie on_add_() rejestrował bezsensowny token, challenge
+    był wysyłany i authz pollowana. Nowy blok else nigdy nie był osiągany.
+    Fix: auth_valid=true zaraz po wykryciu auth_status=valid.
+    Teraz flow: auth valid → else branch → POST ch_url → poll authz → order ready → finalize.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 21:15:00 +0100
+
+nas-web (2.2.64-1) stable; urgency=high
+
+  * ACME — order pending: właściwa przyczyna i fix:
+    LE tworzy NOWE authz dla każdego nowego order. Te authz są pending
+    nawet gdy poprzednie authz tego konta są valid. Finalize wymaga
+    order=ready, a order przechodzi pending->ready dopiero gdy LE
+    zweryfikuje challenge dla nowych authz.
+    Fix: gdy auth=valid (cached), po POST challenge pollujemy authz URL
+    (nie order URL) aż authz przejdzie do valid — to zajmuje ~2-10s.
+    Dopiero potem pollujemy order który powinien być ready.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 21:00:00 +0100
+
+nas-web (2.2.63-1) stable; urgency=high
+
+  * ACME — order pending na zawsze, dwie naprawki:
+    1. jstr() nie obsługiwał spacji po ':' w JSON (LE zwraca 'status': 'pending'
+       ze spacją). Skutek: order_status_init zawsze pusty, fix z v2.2.62
+       nigdy nie działał. jstr() przepisany — obsługuje spacje i wartości
+       bez cudzysłowów (liczby, bool).
+    2. Gdy order utknął na pending mimo auth valid (po 1 iteracji poll)
+       próbuje finalize bezpośrednio. LE akceptuje finalize gdy wszystkie
+       authz są valid nawet przy order=pending (undocumented behavior).
+       Timeout poll skrócony z 5 min do 60s.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 20:30:00 +0100
+
+nas-web (2.2.62-1) stable; urgency=high
+
+  * ACME — order pending na zawsze (główna przyczyna):
+    LE reuse'uje cached auth (valid od 8 marca) dla nowego order.
+    Gdy wszystkie authz są valid, LE zwraca order status='ready'
+    już w odpowiedzi POST new-order. Kod tego nie sprawdzał i
+    wchodził w pętlę challenge+poll która nigdy nie kończyła się.
+    Fix: sprawdź order status zaraz po stworzeniu — jeśli 'ready'
+    lub 'valid', pomiń całą fazę challenge i idź od razu do finalize.
+    Nowy flow: new-order → status ready? → tak: finalize → cert
+                                          → nie: challenge → poll → finalize
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 20:15:00 +0100
+
+nas-web (2.2.61-1) stable; urgency=medium
+
+  * ACME — badNonce error (Auth fetch failed: 400 badNonce):
+    LE zwraca nowy nonce w nagłówku Replay-Nonce nawet przy błędzie 400.
+    post_jws teraz: pobiera nonce z odpowiedzi błędu, ponawia request
+    do 3 razy zanim zwróci błąd. Pokrywa race condition gdy nonce
+    wygasa między krokami (np. wolne DNS, opóźnienie sieci).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 20:00:00 +0100
+
+nas-web (2.2.60-1) stable; urgency=low
+
+  * Resztki debug fprintf() w server.cc (proxy cache callsite) — usunięte ręcznie.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 19:45:00 +0100
+
+nas-web (2.2.59-1) stable; urgency=low
+
+  * Regex usuwający debug fprintf() urwał za wcześnie zostawiając
+    szczątki argumentów bez wywołania funkcji. Usunięte ręcznie.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 19:30:00 +0100
+
+nas-web (2.2.58-1) stable; urgency=medium
+
+  * Cache — wyjaśnienie i fix no-cache:
+    Backend zwraca Cache-Control: no-cache co jest poprawnym nagłówkiem
+    i cache słusznie to respektował. Zmiana: gdy lokacja ma ustawione
+    cache_max_age w konfigu (ttl_override > 0), ignoruje no-cache/private
+    z backendu i wymusza cachowanie. no-store jest zawsze respektowane.
+    Panel cache: zaktualizowany komunikat o pustym cache z instrukcją.
+
+  * Cache — usunięto debug fprintf() z cache.cc i server.cc (był tymczasowy).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 19:15:00 +0100
+
+nas-web (2.2.57-1) stable; urgency=high
+
+  * Cache — główna przyczyna braku wpisów: cache był podpięty TYLKO
+    do ścieżki proxy (callback po odpowiedzi backendu). Static files
+    (LocationType::Static) zwracały odpowiedź i wychodzily przed cache.
+    Fix: dodano cache lookup + store bezpośrednio w static file path,
+    symetrycznie jak w proxy. Pliki statyczne są teraz cachowane.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 19:00:00 +0100
+
+nas-web (2.2.56-1) stable; urgency=low
+
+  * Cache — wersja diagnostyczna. Dodano szczegółowy log przy każdej próbie
+    cache put. Uruchom i zrób request przez proxy, potem sprawdź:
+      journalctl -u nas-web -f | grep CACHE
+    Log pokaże: klucz, status, do_cache, module_cache, cache_max_age,
+    Cache-Control z backendu, czy stored=1 czy 0.
+    Na podstawie wyników zostanie naprawiona przyczyna braku cache.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 18:45:00 +0100
+
+nas-web (2.2.55-1) stable; urgency=low
+
+  * Cache diagnostyka — dodano fprintf(stderr) logi do put() i is_cacheable():
+    [CACHE] put key=... status=... CC='...' ttl_ovr=...
+    [CACHE] REJECTED by is_cacheable / REJECTED ttl=...
+    Uruchom: journalctl -u nas-web -f | grep CACHE
+    lub:     ./nas-web 2>&1 | grep CACHE
+    Pokaże dokładnie dlaczego odpowiedzi nie trafiają do cache.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 18:30:00 +0100
+
+nas-web (2.2.54-1) stable; urgency=medium
+
+  * RAM/CPU — nie były wypełniane: kod był dodany do nieistniejącego
+    'ov-uptime' (stara nazwa), nie do fetchAll/pollStatus.
+    Fix: set('s-ram') i set('s-cpu') dodane bezpośrednio w fetchAll().
+
+  * WAF Overview cards (Blocked/Detected/Top Threat/Checked) świeciły
+    pustkami: updateWafDashboard() była wywoływana tylko gdy sec-dashboard
+    był aktywny. Overview (sec-overview) nigdy nie pasował.
+    Fix: updateWafDashboard() wywoływana zawsze z fetchAll().
+
+  * Cache — renderCache() wywoływane z fetchAll() co 3s niezależnie od
+    aktywnej zakładki powodowało zbędne requesty. Przeniesione do
+    warunkowego wywołania tylko gdy zakładka Cache jest aktywna.
+    Dodano console.debug dla diagnostyki /np_cache response.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 18:00:00 +0100
+
+nas-web (2.2.53-1) stable; urgency=high
+
+  * JS SyntaxError — 'set' already declared (linia 1497):
+    Przy dodawaniu kodu do loadAutoban() funkcja const set była
+    wstawiona dwukrotnie w tej samej funkcji. JS (strict mode) nie
+    pozwala na redeclarację const w tym samym scope.
+    To blokowało cały skrypt — stąd też doLogin() nie było zdefiniowane.
+    Fix: usunięty duplikat, jedna deklaracja set przed użyciem.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 17:30:00 +0100
+
+nas-web (2.2.52-1) stable; urgency=low
+
+  * fscanf warning — (void) cast nie działa w GCC dla warn_unused_result,
+    przypisanie do int _r; (void)_r; wycisza poprawnie.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 17:15:00 +0100
+
+nas-web (2.2.51-1) stable; urgency=low
+
+  * test_cache.cc — g_stat_cache_entries niezadeklarowane:
+    cache.cc jest inkludowane zarówno przez server.cc (gdzie atomic był już
+    zdefiniowany) jak i przez test_cache.cc (standalone, bez server.cc).
+    Fix: cache.cc definiuje własny atomic pod guardem #ifndef,
+    server.cc ustawia #define przed #include cache.cc.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 17:00:00 +0100
+
+nas-web (2.2.50-1) stable; urgency=low
+
+  * Błędy kompilacji z v2.2.49:
+    - g_stat_cache_entries: redefinicja (był w server.cc i cache.cc) — usunięty z cache.cc
+    - each_entry: e.second.expires/size zamiast e.expires/size
+      (LRU to list<pair<string,CacheEntry>>, e jest CacheEntry bezpośrednio)
+    - fscanf: (void) cast dla wyciszenia warn_unused_result
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 16:30:00 +0100
+
+nas-web (2.2.49-1) stable; urgency=high
+
+  * AutoBan — kolejne ID mismatche (HTML vs JS):
+    HTML: ab-total-bans, ab-scan-bans, ab-ua-bans, ab-rate-bans
+    JS:   ab-total-banned, ab-total-blocked (te IDs nie istniały w HTML)
+    Fix: JS wypełnia teraz prawidłowe IDs. Breakdown Scan/UA/Rate
+    obliczany z recent_bans po stronie JS (backend nie zwracał tych danych).
+
+  * Cache — przywrócona wersja cache.cc użytkownika + dodane brakujące metody:
+    size(), max_entries(), flush(), each_entry(), g_stat_cache_entries.
+    Poprzednie zmiany do cache.cc były źródłem regresji.
+
+  * Overview — nowa karta RAM (RSS) + CPU time procesu serwera.
+    Dane z /proc/self/status (VmRSS) i /proc/self/stat (utime+stime).
+    Pokazuje ile pamięci i CPU zużywa sam serwer www.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 16:00:00 +0100
+
+nas-web (2.2.48-1) stable; urgency=high
+
+  * Błędy kompilacji z v2.2.47:
+    - bans_save() użyta w blacklist_flush_sync() zanim była zdefiniowana
+      Fix: bans_save() przeniesiona przed blacklist_flush_sync(), goto usunięte
+    - threads.push_back(stats_thread) — threads nie istnieje w tym scope
+      Fix: g_stats_thread jako global, joinowany przy shutdown
+    - blacklist_save() unused warning — usunięto redundantną wersję
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 15:30:00 +0100
+
+nas-web (2.2.47-1) stable; urgency=high
+
+  * AutoBan zakładka pusta — id mismatch:
+    HTML: id='autoban-bans-tbody'
+    JS:   getElementById('ab-bans-tbody')
+    Nigdy nie znajdował elementu → tabela zawsze pusta.
+    Fix: HTML id zmieniony na 'ab-bans-tbody'.
+
+  * AutoBan po restarcie czyści bany — brak persystencji:
+    recent_bans były tylko w RAM. Fix: bans_save/bans_load:
+    - Zapis: /var/lib/nas-web/recent_bans.txt (format: ts|ip|reason|detail)
+    - Odczyt: przy starcie serwera obok blacklist_load()
+    - Zapis: blacklist_flush_sync() co 5s (background thread)
+    Po restarcie historia banów jest przywracana.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 15:00:00 +0100
+
+nas-web (2.2.46-1) stable; urgency=critical
+
+  * Shutdown timeout (SIGKILL po 10s) — stats_thread był detached
+    i nie kończył się przy SIGTERM. g_stats_timer_running nigdy nie
+    był ustawiany na false. Fix:
+    - stats_thread nie jest detached — dodany do threads[] vector
+    - sleep_for(1s) → 10x sleep(100ms) dla szybkiej reakcji na shutdown
+    - shutdown: store(false) przed join() → wątek kończy się w <100ms
+    - finalny blacklist_flush_sync() przy czystym shutdown
+
+  * TLS connection flood (194.180.48.253 co 4s) — brak limitu połączeń
+    per IP mógł wyczerpać file descriptors i pamięć przy natarczywych
+    scannerach TLS. Fix: domyślny max_conns_per_ip = 32 (był 0=disabled).
+    Można zmienić w panelu: Security → Max connections per IP.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 14:00:00 +0100
+
+nas-web (2.2.45-1) stable; urgency=critical
+
+  * DEADLOCK — serwer zawieszał się przy blokowaniu przez WAF/AutoBan:
+
+    Przyczyna: waf_regex.on_block i waf.on_block robiły:
+      lock(g_blacklist_mu) → blacklist_save() → lock(g_blacklist_mu)
+      = recursive deadlock na std::mutex (non-recursive).
+    To samo co v2.2.37 naprawiał dla /np_blacklist handlera — bug wrócił
+    w callbackach on_block przy refactoringu v2.2.38.
+
+    Fix: on_block używa blacklist_save_nolock() (trzyma już mutex).
+
+  * Blokujące I/O w event loop — blacklist_save_nolock() robiła
+    synchroniczny fopen/fwrite w wątku libuv = freeze event loop.
+    Fix: blacklist_save_nolock() ustawia dirty flag, osobny wątek
+    (stats_thread) zapisuje plik co 5s przez blacklist_flush_sync().
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 12:00:00 +0100
+
+nas-web (2.2.44-1) stable; urgency=high
+
+  * AutoBan — zakładka świeciła pustkami pomimo banów w logach:
+
+    1. wp-includes + wlwmanifest.xml nie były w SCAN_PATHS — AutoBan
+       ich nie rozpoznawał jako scan paths, scan_hits nie rosło.
+       Dodano: wp-includes, wp-content, wlwmanifest.xml.
+
+    2. scan_hits był kumulatywnym int (nie resetował się po oknie).
+       Zmienione na std::deque<time_t> scan_times — sliding window
+       identyczny jak req_times/err404_times. Po cfg.window_sec
+       stare hity są wyrzucane. Próg teraz: scan_times.size() >= threshold.
+
+    3. ua_hits → ua_times (deque) dla spójności. Bad UA nadal banuje
+       przy pierwszym trafieniu (scanner od razu, bez progu).
+
+    4. AutoBan ban zapisuje IP do blacklist.txt (blacklist_save_nolock).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 02:00:00 +0100
+
+nas-web (2.2.44-1) stable; urgency=critical
+
+  * AutoBan + WAF Regex — KRYTYCZNY BUG: każdy worker miał WŁASNĄ instancję
+
+    g_autoban i g_waf_regex były zadeklarowane jako 'static' w headerach.
+    Przy single-translation-unit buildzie każdy worker dostawał oddzielny
+    obiekt — ban events, WAF eventy i statystyki były izolowane per-worker.
+
+    Panel odpytywał losowy worker i widział pustą listę banów, mimo że
+    inny worker faktycznie zablokował IP i zapisał event.
+
+    FIX: usunięto 'static' z headerów, dodano extern + jedną definicję
+    w server.cc. Teraz jeden globalny g_autoban i g_waf_regex dzielony
+    przez wszystkich workerów (thread-safe przez istniejące mutexy).
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 01:30:00 +0100
+
+nas-web (2.2.43-1) stable; urgency=critical
+
+  * WAF — KRYTYCZNY BUG: oba WAF checks całkowicie nie działały
+
+    1. ModSecurity: check był w on_connection() — zaraz po accept(),
+       PRZED odczytaniem danych HTTP. conn->req.path/headers były PUSTE.
+       ModSec sprawdzał pusty request i zawsze przepuszczał.
+       FIX: przeniesiony do dispatch() po sparsowaniu HTTP.
+
+    2. Regex WAF + ModSec: match_location() zwracał 404 i return
+       dla nieistniejących ścieżek (np. /wp-includes/) PRZED sprawdzeniem WAF.
+       Skanery które uderzają w nieistniejące ścieżki były całkowicie pomijane.
+       FIX: oba WAF checks są teraz PRZED match_location().
+
+    Kolejność w dispatch() po naprawce:
+      1. Blacklist check
+      2. AutoBan check
+      3. Regex WAF check  <-- nowa pozycja
+      4. ModSec WAF check <-- nowa pozycja
+      5. match_location() -> 404 jeśli brak
+      6. Rate limit, middleware, cache, proxy...
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 01:00:00 +0100
+
+nas-web (2.2.42-1) stable; urgency=medium
+
+  * WAF Regex — poprawione wzorce WordPress scannerów:
+    Poprzednie wzorce wymagały dokładnie leading '/' na początku.
+    Zmienione na [/\] co akceptuje:
+    - /wp-includes/wlwmanifest.xml  (normalny request)
+    - site/wp-includes/...          (przez reverse proxy z prefix)
+    - //wp-includes/...             (double slash)
+    Nowe wzorce: wp-login.php bez slash, wp-json/wp/v2, backdoor names.
+
+  * WAF Regex — dodatkowe wzorce wykrywania:
+    Backdoory: alfa, r57, c99, b374k, wso, indoxploit
+    CMS probing: wp-signup, wp-register, wp-content/uploads/year/
+    Shell names: shell.php, cmd.php, websh.asp, backdoor.jsp
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 00:00:00 +0100
+
+nas-web (2.2.42-1) stable; urgency=medium
+
+  * WAF Regex — nowe kategorie wzorców:
+
+    ScanProbe (~22 wzorce) — wykrywa typowe skanery i fingerprinting:
+    - WordPress: /wp-includes/, /wp-login.php, /xmlrpc.php, /wlwmanifest.xml
+    - Joomla/Drupal: /administrator/, /sites/default/, /core/install.php
+    - phpMyAdmin: /phpmyadmin/, /pma/, /sqladmin/
+    - Backdoory: c99.php, r57.php, webshell.php, b374k.php
+    - Ukryte pliki: /.git/, /.env, /.htpasswd, /.DS_Store
+    - CVE probe: /actuator/env, /actuator/heapdump, /cgi-bin/
+    - Install scripts: /setup.php, /install.php, /upgrade.php
+
+    BadUA (7 wzorców) — blokuje znane narzędzia skanujące:
+    - sqlmap, nikto, nmap, masscan, ZAP, Burp Suite, Acunetix
+    - gobuster, dirbuster, ffuf, feroxbuster, nuclei
+    - python-requests, go-http-client (bot bez UA)
+
+  * check() naprawiony dla BadUA:
+    check_headers był false domyślnie — BadUA nigdy nie był sprawdzany.
+    Teraz User-Agent jest wyciągany z raw_headers osobno i zawsze
+    sprawdzany dla kategorii BadUA, niezależnie od check_headers.
+
+ -- NAS Panel Team <admin@localhost>  Tue, 10 Mar 2026 00:00:00 +0100
+
 nas-web (2.2.41-1) stable; urgency=medium
 
   * Cache — naprawione zliczanie statystyk:

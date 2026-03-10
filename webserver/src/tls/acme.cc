@@ -134,6 +134,20 @@ static std::string jarr_first(const std::string& j,const std::string& key){
     auto q2=j.find('"',q+1);if(q2==std::string::npos)return"";
     return j.substr(q+1,q2-q-1);
 }
+static std::vector<std::string> jarr_all(const std::string& j,const std::string& key){
+    std::vector<std::string> out;
+    auto kq="\""+key+"\"";auto p=j.find(kq);if(p==std::string::npos)return out;
+    auto b=j.find('[',p);if(b==std::string::npos)return out;
+    auto e=j.find(']',b);if(e==std::string::npos)return out;
+    size_t pos=b;
+    while(pos<e){
+        auto q=j.find('"',pos);if(q==std::string::npos||q>e)break;
+        auto q2=j.find('"',q+1);if(q2==std::string::npos||q2>e)break;
+        out.push_back(j.substr(q+1,q2-q-1));
+        pos=q2+1;
+    }
+    return out;
+}
 
 // ── ACME Client ───────────────────────────────────────────────────────────────
 class AcmeClient {
@@ -264,6 +278,7 @@ public:
         auto dir=acme_http("GET",cfg_.directory_url,"","",ssl_ctx_);
         if(dir.status!=200) return "Directory fetch failed: "+std::to_string(dir.status);
         std::string nn_url=jstr(dir.body,"newNonce");
+        nn_url_=nn_url;  // save for badNonce retry in post_jws
         std::string na_url=jstr(dir.body,"newAccount");
         std::string no_url=jstr(dir.body,"newOrder");
         if(nn_url.empty()||na_url.empty()||no_url.empty())
@@ -306,19 +321,59 @@ public:
             nonce=r.headers["replay-nonce"];
             order_url=r.headers["location"];
             finalize_url=jstr(r.body,"finalize");
-            auth_url=jarr_first(r.body,"authorizations");
+            auth_url=jarr_first(r.body,"authorizations"); // first authz (main loop uses this)
+            { auto all=jarr_all(r.body,"authorizations");
+              NW_INFO("acme","Order has %zu authz(s)",(size_t)all.size()); }
             if(r.status!=201&&r.status!=200)
                 return "Order failed: "+std::to_string(r.status)+" "+r.body.substr(0,300);
             NW_INFO("acme","Order: %s  finalize: %s",order_url.c_str(),finalize_url.c_str());
-            set_progress("Order stworzony, pobieranie challenge...", 30);
+            NW_INFO("acme","Order authz URL: %s", auth_url.c_str());
+            NW_INFO("acme","Full order body: %s", r.body.substr(0,500).c_str());
+            // Check if order is already ready/valid (cached auth)
+            auto order_status_init = jstr(r.body, "status");
+            NW_INFO("acme","Order initial status: %s", order_status_init.c_str());
+            if(order_status_init == "ready" || order_status_init == "valid"){
+                // Skip challenge — go straight to finalize
+                set_progress("Order gotowy od razu (cached auth) — finalizacja...", 80);
+                NW_INFO("acme","Order already ready — skipping challenge phase");
+                // Set auth_url empty so challenge step is skipped
+                auth_url = "__order_ready__";
+            } else {
+                set_progress("Order stworzony, pobieranie challenge...", 30);
+            }
         }
 
-        // ── Step 5: Authorization + challenge (HTTP-01 or DNS-01) ──────────────
-        set_progress("Pobieranie danych autoryzacji...", 35);
+        // ── Step 5: Authorization + challenge for ALL authz in order ───────────
+        // Order may have multiple authz (e.g. nasserver.pl + www.nasserver.pl)
+        // ALL must be valid before order transitions pending→ready
         std::string ch_url, token;
         bool use_dns01 = (cfg_.challenge_type == "dns-01");
+        bool auth_valid = false;
+
+        // Collect ALL authz URLs from order (we stored body above)
+        // Re-fetch order to get authz list (or use cached order body)
+        std::vector<std::string> all_authz_urls;
         {
-            auto r=post_jws("",kid,nonce,auth_url,"");  // POST-as-GET
+            auto ro=post_jws("",kid,nonce,order_url,"");
+            nonce=ro.headers["replay-nonce"];
+            all_authz_urls=jarr_all(ro.body,"authorizations");
+            if(all_authz_urls.empty() && !auth_url.empty())
+                all_authz_urls.push_back(auth_url);
+            NW_INFO("acme","Processing %zu authz(s)",(size_t)all_authz_urls.size());
+        }
+
+        if(auth_url == "__order_ready__"){
+            token = "__already_valid__";
+            auth_valid = true;
+            NW_INFO("acme","Skipping challenge — order was ready on creation");
+        } else {
+        set_progress("Pobieranie danych autoryzacji...", 35);
+        // Process each authz — serve token and trigger challenge for each pending one
+        for(size_t authz_idx=0; authz_idx<all_authz_urls.size() && running_; authz_idx++){
+            const std::string& cur_auth_url = all_authz_urls[authz_idx];
+            NW_INFO("acme","Authz [%zu/%zu]: %s",authz_idx+1,all_authz_urls.size(),cur_auth_url.c_str());
+        {
+            auto r=post_jws("",kid,nonce,cur_auth_url,"");  // POST-as-GET
             nonce=r.headers["replay-nonce"];
             if(r.status!=200&&r.status!=201)
                 return "Auth fetch failed: "+std::to_string(r.status)+" "+r.body.substr(0,200);
@@ -329,9 +384,12 @@ public:
                     auth_status.c_str(), cfg_.challenge_type.c_str());
 
             if(auth_status == "valid"){
-                NW_INFO("acme","Auth already valid (cached) — extracting ch_url for order trigger");
-                token = "__already_valid__";
-                // Extract ch_url even for valid auth — needed to trigger order transition
+                // Auth shows valid (cached from previous order) but the NEW order's
+                // authz is still pending internally. We must do the full challenge flow
+                // (serve token + POST challenge) so LE verifies and transitions order→ready.
+                NW_INFO("acme","Auth cached-valid — doing full challenge flow for new order authz");
+                // auth_valid stays FALSE — we go through normal HTTP-01 path
+                // Extract ch_url for challenge POST
                 auto& body2 = r.body;
                 std::string find_type2 = use_dns01 ? "dns-01" : "http-01";
                 size_t p2=0;
@@ -348,11 +406,16 @@ public:
                     if(te2>tb2){
                         auto chunk2=body2.substr(tb2,te2-tb2+1);
                         auto cu2=jstr(chunk2,"url");
-                        if(!cu2.empty()){ ch_url=cu2; break; }
+                        auto to2=jstr(chunk2,"token");
+                        if(!cu2.empty()){ ch_url=cu2; }
+                        if(!to2.empty()){ token=to2; }
+                        if(!cu2.empty()&&!to2.empty()) break;
                     }
                     p2++;
                 }
-                NW_INFO("acme","ch_url for cached auth: %s", ch_url.empty()?"(not found)":ch_url.c_str());
+                NW_INFO("acme","ch_url=%s token=%s",
+                    ch_url.empty()?"(not found)":ch_url.c_str(),
+                    token.empty()?"(not found)":token.substr(0,16).c_str());
             } else if(auth_status == "invalid" || auth_status == "revoked"){
                 std::string why;
                 auto ep=r.body.find("\"error\"");
@@ -395,7 +458,7 @@ public:
         }
 
         // ── Step 6+7+8: Challenge — HTTP-01 or DNS-01 ─────────────────────────
-        bool auth_valid = (token == "__already_valid__");
+        // auth_valid already set above
         std::string dns_record_id; // for cleanup after DNS-01
 
         if(!auth_valid){
@@ -442,28 +505,44 @@ public:
                 NW_INFO("acme","Challenge triggered: HTTP %d",r.status);
             }
         } else {
-            // Auth is cached-valid. LE requires a POST to the challenge URL
-            // to trigger the order status transition pending→ready,
-            // even when auth is already valid.
+            // Auth is cached-valid but order is pending.
+            // POST to challenge URL to trigger pending→ready transition.
             if(!ch_url.empty()){
-                set_progress("Auth ważna — POST challenge URL (order trigger)...", 72);
+                set_progress("Auth ważna — aktywacja order (POST challenge)...", 68);
                 auto r2=post_jws("",kid,nonce,ch_url,"{}");
                 nonce=r2.headers["replay-nonce"];
-                NW_INFO("acme","Challenge POST for cached auth: HTTP %d",r2.status);
+                NW_INFO("acme","Challenge POST for cached auth: HTTP %d body=%s",
+                    r2.status, r2.body.substr(0,80).c_str());
+                // Poll authz until valid (should be near-instant for cached auth)
+                for(int i=0;i<10&&running_;i++){
+                    std::this_thread::sleep_for(std::chrono::seconds(2));
+                    auto ra=post_jws("",kid,nonce,auth_url,"");
+                    nonce=ra.headers["replay-nonce"];
+                    auto ast=jstr(ra.body,"status");
+                    NW_INFO("acme","Auth poll [%d/10]: status=%s",i+1,ast.c_str());
+                    set_progress("Auth poll ["+std::to_string(i+1)+"/10]: "+ast, 70+i);
+                    if(ast=="valid"){ auth_valid=true; break; }
+                    if(ast=="invalid"||ast=="revoked")
+                        return "Auth "+ast+" after POST: "+ra.body.substr(0,200);
+                }
             } else {
                 set_progress("Auth ważna (cache LE) — czekam na order ready...", 72);
                 NW_INFO("acme","ch_url empty for cached auth — relying on LE auto-transition");
+                auth_valid = true;
             }
         }
 
-        // ── Step 8: Poll authorization until valid ───────────────────────────
-        for(int i=0;i<30&&!auth_valid&&running_;i++){
+        // ── Step 8: Poll this authz until valid ──────────────────────────────
+        bool this_authz_valid = false;
+        for(int i=0;i<30&&!this_authz_valid&&running_;i++){
             std::this_thread::sleep_for(std::chrono::seconds(3));
-            auto r=post_jws("",kid,nonce,auth_url,"");  // POST-as-GET
+            auto r=post_jws("",kid,nonce,cur_auth_url,"");  // POST-as-GET
             nonce=r.headers["replay-nonce"];
             auto st=jstr(r.body,"status");
-            set_progress("Weryfikacja challenge ["+std::to_string(i+1)+"/30]: "+st, 60+i);
-            if(st=="valid"){ auth_valid=true; }
+            set_progress("Authz "+std::to_string(authz_idx+1)+"/"+std::to_string(all_authz_urls.size())
+                +" ["+std::to_string(i+1)+"/30]: "+st, 55+i);
+            NW_INFO("acme","Authz %zu poll [%d/30]: %s",authz_idx+1,i+1,st.c_str());
+            if(st=="valid"){ this_authz_valid=true; }
             else if(st=="invalid"||st=="revoked"){
                 if(!use_dns01 && on_rm_) on_rm_(token);
                 if(use_dns01){
@@ -473,7 +552,7 @@ public:
                 return "Challenge "+st+": "+r.body.substr(0,400);
             }
         }
-        // Cleanup challenge
+        // Cleanup token for this authz
         if(!use_dns01 && on_rm_) on_rm_(token);
         if(use_dns01){
             if(cfg_.dns_provider=="cloudflare" && !dns_record_id.empty())
@@ -481,7 +560,15 @@ public:
             else if(cfg_.dns_provider=="exec" && !dns_record_id.empty())
                 exec_dns("remove", cfg_.domains[0]);
         }
-        if(!auth_valid) return "Auth timed out after 90s (30x3s)";
+        if(!this_authz_valid){
+            return "Authz "+std::to_string(authz_idx+1)+" timed out";
+        }
+        // Reset per-authz state for next authz
+        ch_url=""; token=""; dns_record_id="";
+        } // end authz body block
+        } // end authz loop
+
+        auth_valid = true; // all authz processed successfully
 
         // ── Step 9: Poll order until ready ───────────────────────────────────
         // RFC 8555 §7.4 — order MUST be "ready" before finalize.
@@ -491,24 +578,26 @@ public:
             NW_INFO("acme","Auth was cached-valid — waiting 5s for order to become ready...");
             std::this_thread::sleep_for(std::chrono::seconds(5));
         }
-        if(!order_url.empty()){
+        if(!order_url.empty() && !finalize_url.empty()){
+            // Poll order for ready status, but don't wait forever.
+            // acme.sh approach: if authz is valid, attempt finalize regardless of order status.
             bool order_ready = false;
-            int poll_max = auth_valid ? 60 : 30;  // cached auth: up to 5min
-            int poll_interval = 5;
-            for(int i=0;i<poll_max&&running_;i++){
-                auto r=post_jws("",kid,nonce,order_url,"");  // POST-as-GET
+            for(int i=0;i<6&&running_;i++){
+                auto r=post_jws("",kid,nonce,order_url,"");
                 nonce=r.headers["replay-nonce"];
                 auto st=jstr(r.body,"status");
-                int elapsed = (i+1)*poll_interval;
-                set_progress("Order status ["+std::to_string(elapsed)+"s]: "+st, 72+(i*28/poll_max));
-                NW_INFO("acme","Order poll [%d/%d]: status=%s",i+1,poll_max,st.c_str());
+                NW_INFO("acme","Order poll [%d/6]: status=%s",i+1,st.c_str());
+                set_progress("Order poll ["+std::to_string(i+1)+"/6]: "+st, 74+i*2);
                 if(st=="ready"||st=="valid"){ order_ready=true; break; }
                 if(st=="invalid") return "Order invalid: "+r.body.substr(0,200);
-                std::this_thread::sleep_for(std::chrono::seconds(poll_interval));
+                std::this_thread::sleep_for(std::chrono::seconds(3));
             }
-            if(!order_ready) return "Order still pending after "+
-                std::to_string(poll_max*poll_interval)+"s. "+
-                "Auth was cached-valid — this may be a LE API delay. Try again in a few minutes.";
+            if(!order_ready){
+                // authz is valid but order didn't flip to ready — proceed anyway
+                // LE sometimes accepts finalize when authz valid even if order shows pending
+                NW_INFO("acme","Order not ready after poll — proceeding to finalize (authz is valid)");
+                set_progress("Próba finalizacji mimo order=pending (authz valid)...", 82);
+            }
         }
 
         // ── Step 10: Generate domain key + CSR ───────────────────────────────
@@ -520,16 +609,29 @@ public:
         if(csr_der.empty()) return "CSR generation failed";
         NW_INFO("acme","CSR ready (%zu bytes DER)",csr_der.size());
 
-        // ── Step 11: Finalize ────────────────────────────────────────────────
+        // ── Step 11: Finalize (retry on orderNotReady) ───────────────────────
         set_progress("Finalizacja — wysyłam CSR...", 88);
         std::string cert_url;
         {
             std::string csr_b64=b64url((const unsigned char*)csr_der.data(),csr_der.size());
-            auto r=post_jws("",kid,nonce,finalize_url,"{\"csr\":\""+csr_b64+"\"}");
-            nonce=r.headers["replay-nonce"];
-            NW_INFO("acme","Finalize: HTTP %d",r.status);
-            if(r.status!=200&&r.status!=201)
+            std::string fpayload="{\"csr\":\""+csr_b64+"\"}";
+            AcmeHttpResp r;
+            bool finalized=false;
+            for(int fi=0; fi<15 && running_; fi++){
+                r=post_jws("",kid,nonce,finalize_url,fpayload);
+                nonce=r.headers["replay-nonce"];
+                NW_INFO("acme","Finalize attempt %d: HTTP %d",fi+1,r.status);
+                if(r.status==200||r.status==201){ finalized=true; break; }
+                if(r.body.find("orderNotReady")!=std::string::npos){
+                    set_progress("Order not ready — retry "+std::to_string(fi+1)+"/15...", 88);
+                    NW_INFO("acme","orderNotReady — waiting 5s");
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    continue;
+                }
                 return "Finalize failed: "+std::to_string(r.status)+" "+r.body.substr(0,400);
+            }
+            if(!finalized)
+                return "Finalize failed after retries: "+r.body.substr(0,200);
 
             // ── Step 12: Poll order for cert URL ─────────────────────────────
             for(int i=0;i<20&&cert_url.empty()&&running_;i++){
@@ -588,6 +690,7 @@ public:
 private:
     Config cfg_;
     SSL_CTX* ssl_ctx_{nullptr};
+    std::string nn_url_;   // newNonce URL — for badNonce retry
     EVP_PKEY* acct_key_{nullptr};
     std::thread renew_thread_;
     std::atomic<bool> running_{false};
@@ -662,9 +765,25 @@ public:
     }
 
     // Sign + POST in one call, updates nonce automatically
+    // Retries once on badNonce (LE returns fresh nonce in error response)
     AcmeHttpResp post_jws(const std::string& jwk,const std::string& kid,
                           std::string& nonce, const std::string& url,
                           const std::string& payload){
+        for(int attempt=0; attempt<3; attempt++){
+            auto jws=sign_jws(jwk,kid,nonce,url,payload);
+            auto r=acme_http("POST",url,jws,"application/jose+json",ssl_ctx_);
+            // Always update nonce from response (even on error LE sends new nonce)
+            if(!r.headers["replay-nonce"].empty()) nonce=r.headers["replay-nonce"];
+            // Retry on badNonce — use the fresh nonce LE just gave us
+            if(r.status==400 && r.body.find("badNonce")!=std::string::npos){
+                NW_INFO("acme","badNonce on attempt %d — retrying with fresh nonce",attempt+1);
+                if(nonce.empty() && !nn_url_.empty())
+                    nonce=fresh_nonce(nn_url_);
+                continue;
+            }
+            return r;
+        }
+        // Fallback after 3 attempts
         auto jws=sign_jws(jwk,kid,nonce,url,payload);
         auto r=acme_http("POST",url,jws,"application/jose+json",ssl_ctx_);
         if(!r.headers["replay-nonce"].empty()) nonce=r.headers["replay-nonce"];

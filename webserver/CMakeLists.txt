@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(nas-web VERSION 2.0.0 LANGUAGES CXX C)
+project(nas-web VERSION 2.2.77 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -150,7 +150,7 @@ endif()
 # Binary
 add_executable(nas-web src/core/server.cc)
 target_include_directories(nas-web PRIVATE ${INCS})
-target_compile_definitions(nas-web PRIVATE ${DEFS})
+target_compile_definitions(nas-web PRIVATE ${DEFS} NAS_WEB_VERSION="${PROJECT_VERSION}")
 if(DEFINED QJS_LINK_LIB)
     target_link_libraries(nas-web PRIVATE ${QJS_LINK_LIB} ${DEPS})
 else()

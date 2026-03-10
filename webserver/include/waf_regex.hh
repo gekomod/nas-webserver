@@ -202,6 +202,75 @@ struct WafRegexEngine {
         }
         pattern_sets.push_back(std::move(xxe));
 
+        // ── Scanner / Probe Detection ─────────────────────────────────────────
+        // Typowe ścieżki skanerów WordPress, Joomla, phpMyAdmin, CVE scannerów
+        PatternSet scan; scan.category = "ScanProbe";
+        std::vector<std::string> scan_raw = {
+            // WordPress fingerprinting (match with or without leading slash)
+            R"([/\\]wp-(includes|content|admin|login|cron|json|config|signup|trackback|comments)[/\\])",
+            R"([/\\]wp-(includes|content|admin|login)\.php)",
+            R"([/\\]xmlrpc\.php)",
+            R"([/\\]wlwmanifest\.xml)",
+            R"([/\\]wp-config(\.php|\.bak|\.old|\.txt|~))",
+            R"(wp-login\.php)",
+            // Joomla / Drupal / other CMS
+            R"(/administrator/(index|login)\.php)",
+            R"(/joomla/(administrator|index))",
+            R"(/sites/default/files)",
+            R"(/core/install\.php)",
+            // phpMyAdmin / database tools
+            R"(/(phpmyadmin|pma|myadmin|mysql|sqladmin|dbadmin)[^a-zA-Z])",
+            R"(/phpmyadmin)",
+            // Shell/backdoor probing
+            R"(/((c99|r57|shell|cmd|webshell|b374k|bypass|exploit)\.(php|asp|jsp|cfm)))",
+            R"(/\.(git|svn|env|htpasswd|htaccess|DS_Store|idea|vscode)/)",
+            R"(/\.git/(HEAD|config|objects))",
+            R"(/\.env($|\?))",
+            // Common vuln scanners
+            R"(/(config|setup|install|upgrade|update)\.(php|asp|jsp)$)",
+            R"(/etc/(passwd|shadow|hosts))",
+            R"(/(invoker|jmx-console|web-console|status|manager)($|/))",
+            // CVE / RCE probes
+            R"(/cgi-bin/(\w+\.(cgi|pl|sh|py)|admin\.cgi))",
+            R"(/actuator/(env|heapdump|shutdown|beans|mappings))",
+            R"(/(api/|v[0-9]+/)?(health|metrics|info|debug|trace|swagger|openapi)\.json)",
+            // Additional WordPress/CMS aggressive probing
+            R"([/\\](wp-login|wp-signup|wp-register)\.php)",
+            R"([/\\]wp-json/wp/v[0-9])",
+            R"([/\\]wp-content/uploads/[0-9]{4}/)",
+            R"([/\\](license|readme|license\.(txt|html|md))$)",
+            R"([/\\]\.well-known/security\.txt)",
+            // Common backdoor/webshell names
+            R"([/\\](alfa|alfa1|alfa2|r57|c99|b374k|wso|priv8|indoxploit)\.(php|txt))",
+            R"([/\\](shell|cmd|websh|backdoor|hack|hacked)\.(php|asp|jsp))",
+        };
+        for(auto& r : scan_raw) {
+            try { scan.patterns.emplace_back(r, flag); scan.raw.push_back(r); }
+            catch(const std::exception& ex) {
+                NW_WARN("waf_regex", "ScanProbe pattern compile error: %s", ex.what());
+            }
+        }
+        pattern_sets.push_back(std::move(scan));
+
+        // ── Bad User-Agent ────────────────────────────────────────────────────
+        PatternSet ua; ua.category = "BadUA";
+        std::vector<std::string> ua_raw = {
+            R"(\b(sqlmap|nikto|nmap|masscan|zap|burpsuite|acunetix|nessus)\b)",
+            R"(\b(zgrab|gobuster|dirbuster|dirb|wfuzz|ffuf|feroxbuster)\b)",
+            R"(\b(nuclei|httpx|subfinder|amass|shodan|censys)\b)",
+            R"(\b(python-requests|go-http-client|curl/[0-9]|wget/[0-9])\b)",
+            R"(\b(scrapy|mechanize|libwww-perl|lwp-trivial)\b)",
+            R"((wordpress|wp-) (scanner|attack|probe|hack))",
+            R"(\b(bot|crawler|spider|scraper)\b.{0,30}\b(attack|scan|probe|hack)\b)",
+        };
+        for(auto& r : ua_raw) {
+            try { ua.patterns.emplace_back(r, std::regex_constants::icase | std::regex_constants::optimize); ua.raw.push_back(r); }
+            catch(const std::exception& ex) {
+                NW_WARN("waf_regex", "BadUA pattern compile error: %s", ex.what());
+            }
+        }
+        pattern_sets.push_back(std::move(ua));
+
         compiled = true;
     }
 
@@ -226,16 +295,30 @@ struct WafRegexEngine {
         if(cfg.check_query) target += query + " ";
         if(cfg.check_body && !body.empty())
             target += body.substr(0, cfg.max_body_check) + " ";
-        if(cfg.check_headers && !raw_headers.empty())
-            target += raw_headers.substr(0, 4096);
+
+        // Extract User-Agent from raw_headers for BadUA matching (always)
+        std::string ua_str;
+        if(!raw_headers.empty()) {
+            auto uap = raw_headers.find("User-Agent:");
+            if(uap == std::string::npos) uap = raw_headers.find("user-agent:");
+            if(uap != std::string::npos) {
+                auto end = raw_headers.find('\n', uap);
+                ua_str = raw_headers.substr(uap, end == std::string::npos ? 256 : end - uap);
+            }
+        }
 
         // URL-decode target once for better pattern coverage
         std::string decoded = url_decode(target);
 
         for(auto& ps : pattern_sets) {
+            // BadUA uses User-Agent header only; others use path/query/body
+            const std::string& check_str = (ps.category == "BadUA")
+                ? ua_str
+                : decoded;
+            if(check_str.empty()) continue;
             for(size_t i = 0; i < ps.patterns.size(); i++) {
                 std::smatch m;
-                if(std::regex_search(decoded, m, ps.patterns[i])) {
+                if(std::regex_search(check_str, m, ps.patterns[i])) {
                     total_detected.fetch_add(1, std::memory_order_relaxed);
                     if(cfg.block_mode)
                         total_blocked.fetch_add(1, std::memory_order_relaxed);
@@ -349,4 +432,7 @@ private:
     }
 };
 
-static WafRegexEngine g_waf_regex;
+// g_waf_regex defined once in server.cc
+#ifndef WAF_REGEX_IMPL
+extern WafRegexEngine g_waf_regex;
+#endif

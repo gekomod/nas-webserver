@@ -21,7 +21,8 @@ static constexpr const char* SCAN_PATHS[] = {
     ".env", ".env.", "/.aws/", "/.git/", ".git/config", ".gitconfig",
     "config/.env", "docker-compose", ".htpasswd", "web.config",
     // CMS exploits
-    "wp-login.php", "wp-admin", "xmlrpc.php", "wp-config.php",
+    "wp-login.php", "wp-admin", "wp-includes", "wp-content",
+    "xmlrpc.php", "wlwmanifest.xml", "wp-config.php",
     "wp-content/uploads", "administrator/", "joomla", "drupal",
     // Shell / backdoors
     ".php?", "cmd=", "exec=", "shell.php", "c99.php", "r57.php",
@@ -55,8 +56,8 @@ struct IpStats {
     // sliding window counters (last 60s)
     std::deque<time_t> req_times;    // all requests
     std::deque<time_t> err404_times; // 404 responses
-    int scan_hits   = 0;             // total scan path hits
-    int ua_hits     = 0;             // total bad UA hits
+    std::deque<time_t> scan_times;   // scan path hits (windowed)
+    std::deque<time_t> ua_times;     // bad UA hits (windowed)
     time_t first_seen = 0;
     time_t last_seen  = 0;
 };
@@ -141,7 +142,9 @@ struct AutoBan {
             std::transform(ua_lower.begin(), ua_lower.end(), ua_lower.begin(), ::tolower);
             for(int i = 0; BAD_UA[i]; i++) {
                 if(ua_lower.find(BAD_UA[i]) != std::string::npos) {
-                    st.ua_hits++;
+                    slide(st.ua_times, now, cfg.window_sec);
+                    st.ua_times.push_back(now);
+                    // Bad UA: ban immediately on first hit
                     return do_ban(ip, "bad_ua", std::string(BAD_UA[i]));
                 }
             }
@@ -154,8 +157,9 @@ struct AutoBan {
                            path_lower.begin(), ::tolower);
             for(int i = 0; SCAN_PATHS[i]; i++) {
                 if(path_lower.find(SCAN_PATHS[i]) != std::string::npos) {
-                    st.scan_hits++;
-                    if(st.scan_hits >= cfg.scan_threshold)
+                    slide(st.scan_times, now, cfg.window_sec);
+                    st.scan_times.push_back(now);
+                    if((int)st.scan_times.size() >= cfg.scan_threshold)
                         return do_ban(ip, "scan", path.substr(0, 80));
                     break;
                 }
@@ -212,6 +216,9 @@ struct AutoBan {
         stats_.clear();
     }
 
+    // Public mutex accessor for persistence helpers in server.cc
+    std::mutex& mu_pub() { return mu_; }
+
 private:
     std::mutex mu_;
     std::unordered_map<std::string, IpStats> stats_;
@@ -233,4 +240,7 @@ private:
     }
 };
 
-static AutoBan g_autoban;
+// g_autoban defined once in server.cc — use extern to reference it
+#ifndef AUTOBAN_IMPL
+extern AutoBan g_autoban;
+#endif

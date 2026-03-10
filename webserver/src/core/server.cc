@@ -30,6 +30,7 @@
 static std::atomic<uint64_t> g_stat_cache_hit{0};
 static std::atomic<uint64_t> g_stat_cache_miss{0};
 static std::atomic<uint64_t> g_stat_cache_entries{0};
+#define G_STAT_CACHE_ENTRIES_DEFINED  // tell cache.cc not to redefine
 
 #include "../cache/cache.cc"
 #include "../security/ratelimit.cc"
@@ -82,20 +83,78 @@ static int         g_wstats_count{0}; // set during startup
 
 static std::mutex                         g_blacklist_mu;
 static std::unordered_set<std::string>    g_blacklist;
+
+// ── Singleton globals — shared across all workers (defined once here) ────────
+#define AUTOBAN_IMPL
+AutoBan           g_autoban;
+#define WAF_REGEX_IMPL
+WafRegexEngine    g_waf_regex;
 static std::string                        g_blacklist_file{"/var/lib/nas-web/blacklist.txt"};
 
 // Musi być wywoływane BEZ trzymania g_blacklist_mu
+static std::atomic<bool> g_blacklist_dirty{false};
+
 static void blacklist_save_nolock(){
-    std::filesystem::create_directories("/var/lib/nas-web");
-    FILE* f = fopen(g_blacklist_file.c_str(), "w");
-    if(!f){ NW_WARN("blacklist","Cannot write %s",g_blacklist_file.c_str()); return; }
-    for(auto& ip : g_blacklist) fprintf(f, "%s\n", ip.c_str());
+    g_blacklist_dirty.store(true, std::memory_order_relaxed);
+}
+
+// ── AutoBan recent_bans persistence ──────────────────────────────────────────
+static const std::string G_BANS_FILE = "/var/lib/nas-web/recent_bans.txt";
+
+static void bans_save(){
+    FILE* f = fopen(G_BANS_FILE.c_str(), "w");
+    if(!f) return;
+    std::lock_guard<std::mutex> lk(g_autoban.mu_pub());
+    for(auto& b : g_autoban.recent_bans){
+        std::string esc;
+        for(char c : b.detail){ if(c=='|') esc+="\\|"; else esc+=c; }
+        fprintf(f, "%lld|%s|%s|%s\n", (long long)b.ts, b.ip.c_str(), b.reason.c_str(), esc.c_str());
+    }
     fclose(f);
 }
-// Wersja z własnym lockiem — dla wywołań spoza sekcji krytycznej
-static void blacklist_save(){
-    std::lock_guard<std::mutex> lk(g_blacklist_mu);
-    blacklist_save_nolock();
+
+static void blacklist_flush_sync(){
+    std::filesystem::create_directories("/var/lib/nas-web");
+    std::vector<std::string> snap;
+    bool dirty = false;
+    {
+        std::lock_guard<std::mutex> lk(g_blacklist_mu);
+        dirty = g_blacklist_dirty.load(std::memory_order_relaxed);
+        if(dirty){
+            snap.assign(g_blacklist.begin(), g_blacklist.end());
+            g_blacklist_dirty.store(false, std::memory_order_relaxed);
+        }
+    }
+    if(dirty){
+        FILE* f = fopen(g_blacklist_file.c_str(), "w");
+        if(!f){ NW_WARN("blacklist","Cannot write %s",g_blacklist_file.c_str()); }
+        else { for(auto& ip : snap) fprintf(f, "%s\n", ip.c_str()); fclose(f); }
+    }
+    bans_save();
+}
+
+static void bans_load(){
+    FILE* f = fopen(G_BANS_FILE.c_str(), "r");
+    if(!f) return;
+    char buf[512];
+    while(fgets(buf, sizeof(buf), f)){
+        std::string line(buf);
+        if(!line.empty() && line.back()=='\n') line.pop_back();
+        // Parse: ts|ip|reason|detail
+        auto p1 = line.find('|');
+        auto p2 = line.find('|', p1+1);
+        auto p3 = line.find('|', p2+1);
+        if(p1==std::string::npos||p2==std::string::npos||p3==std::string::npos) continue;
+        AutoBan::BanEvent ev;
+        ev.ts     = (time_t)std::stoll(line.substr(0, p1));
+        ev.ip     = line.substr(p1+1, p2-p1-1);
+        ev.reason = line.substr(p2+1, p3-p2-1);
+        ev.detail = line.substr(p3+1);
+        g_autoban.recent_bans.push_back(ev);
+    }
+    fclose(f);
+    NW_INFO("autoban", "Loaded %zu ban records from %s",
+            g_autoban.recent_bans.size(), G_BANS_FILE.c_str());
 }
 
 static void blacklist_load(){
@@ -116,7 +175,7 @@ static void blacklist_load(){
 // ── Per-IP connection counter ─────────────────────────────────────────────
 static std::mutex                              g_connlimit_mu;
 static std::unordered_map<std::string,int>    g_conn_count;
-static int                                     g_max_conns_per_ip{0}; // 0=disabled
+static int                                     g_max_conns_per_ip{32}; // default: 32 per IP
 
 // ── Active connections list (for admin panel) ─────────────────────────────
 struct ActiveConn {
@@ -160,6 +219,7 @@ static std::mutex              g_stats_hist_mu;
 static std::deque<StatSample>  g_stats_hist;   // 1 sample/s, max 3600 (1h)
 static const int               G_STATS_HIST_MAX = 3600;
 static std::atomic<bool>       g_stats_timer_running{false};
+static std::thread             g_stats_thread;
 
 // Prev values for delta calculation
 static uint64_t g_prev_req{0};
@@ -364,7 +424,22 @@ static bool tls_on_raw_data(Conn* conn, const char* data, size_t len) {
         int err = SSL_get_error(conn->ssl, r);
         if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
             return true; // handshake in progress
+        // SSL_ERROR_SSL (1) = client dropped connection or sent bad data — not a server error
+        if(err == SSL_ERROR_SSL || err == SSL_ERROR_SYSCALL) {
+            unsigned long ossl_err = ERR_peek_last_error();
+            int reason = ERR_GET_REASON(ossl_err);
+            // Suppress common "noisy" errors: unexpected EOF, unknown protocol, no shared cipher
+            if(reason == SSL_R_UNEXPECTED_EOF_WHILE_READING ||
+               reason == SSL_R_UNKNOWN_PROTOCOL ||
+               reason == SSL_R_NO_SHARED_CIPHER ||
+               reason == SSL_R_WRONG_VERSION_NUMBER ||
+               reason == 0) {
+                ERR_clear_error();
+                return false; // silent drop
+            }
+        }
         NW_WARN("tls", "Handshake failed: SSL error %d", err);
+        ERR_clear_error();
         return false;
     }
 
@@ -795,12 +870,36 @@ static void dispatch(Conn* conn) {
     // /np_status — server stats JSON
     if(rpath == "/np_status") {
         int nw = g_worker_count.load(); if(nw < 1) nw = 1;
-        char buf[640];
+        // Read CPU and RSS from /proc/self
+        long cpu_ms = 0; long rss_kb = 0;
+        {
+            FILE* fp = fopen("/proc/self/stat", "r");
+            if(fp){
+                long utime=0, stime=0;
+                // field 14=utime, 15=stime (jiffies)
+                int _r = fscanf(fp, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %ld %ld", &utime, &stime); (void)_r;
+                fclose(fp);
+                long hz = sysconf(_SC_CLK_TCK);
+                if(hz > 0) cpu_ms = (utime + stime) * 1000 / hz;
+            }
+            FILE* fp2 = fopen("/proc/self/status", "r");
+            if(fp2){
+                char line[128];
+                while(fgets(line, sizeof(line), fp2)){
+                    if(strncmp(line, "VmRSS:", 6)==0){
+                        sscanf(line+6, "%ld", &rss_kb); break;
+                    }
+                }
+                fclose(fp2);
+            }
+        }
+        char buf[768];
         snprintf(buf, sizeof(buf),
             "{\"version\":\"%.*s\",\"worker\":%d,\"workers\":%d,"
             "\"requests\":%llu,\"cache_hits\":%llu,\"errors\":%llu,"
             "\"req_per_sec\":%llu,"
             "\"uptime\":%lld,"
+            "\"cpu_ms\":%ld,\"rss_kb\":%ld,"
             "\"client_ip\":\"%s\","
             "\"admin_allowlist_size\":%zu,"
             "\"modules\":{\"lua\":%s,\"quickjs\":%s,\"nghttp2\":%s,\"tls\":%s,\"brotli\":%s}}",
@@ -810,6 +909,7 @@ static void dispatch(Conn* conn) {
             (unsigned long long)g_stat_err.load(),
             (unsigned long long)g_stat_req_per_sec.load(),
             (long long)(time(nullptr) - g_start_time),
+            cpu_ms, rss_kb,
             conn->client_ip.c_str(),
             cfg.admin_allow_ips.size(),
 #if defined(HAVE_LUA)
@@ -1771,13 +1871,87 @@ static void dispatch(Conn* conn) {
 
     } // end is_admin_path
 
+    // ── IP Blacklist check ────────────────────────────────────────────────────
+    {
+        std::lock_guard<std::mutex> lk(g_blacklist_mu);
+        if(g_blacklist.count(conn->client_ip)) {
+            NW_DEBUG("blacklist", "Blocked IP: %s", conn->client_ip.c_str());
+            g_stat_err.fetch_add(1, std::memory_order_relaxed);
+            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
+                delete static_cast<Conn*>(h->data); });
+            return;
+        }
+    }
+
+    // ── AutoBan pre-request check (ZAWSZE przed WAF — zlicza scan_hits) ───────
+    {
+        auto ua  = std::string(conn->req.headers.get("User-Agent"));
+        auto verdict = g_autoban.check(conn->client_ip, conn->req.path, ua, 0);
+        if(verdict == AutoBan::Verdict::Ban) {
+            std::lock_guard<std::mutex> lk(g_blacklist_mu);
+            g_blacklist.insert(conn->client_ip);
+            blacklist_save_nolock();
+            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
+                delete static_cast<Conn*>(h->data); });
+            return;
+        }
+    }
+
+    // ── Built-in regex WAF check (PRZED match_location — blokuje też 404-bound scans) ──
+    if(g_waf_regex.cfg.enabled && g_waf_regex.compiled){
+        std::string waf_cat, waf_detail;
+        std::string raw_hdrs;
+        for(auto& h : conn->req.headers.items)
+            raw_hdrs += std::string(h.first) + ": " + std::string(h.second) + "\r\n";
+        bool allowed = g_waf_regex.check(
+            conn->client_ip,
+            std::string(method_str(conn->req.method)),
+            conn->req.path,
+            conn->req.query,
+            conn->req.body,
+            raw_hdrs,
+            &waf_cat, &waf_detail
+        );
+        if(!allowed){
+            auto r = Response::make_json_error(403,
+                "Blocked by WAF: " + waf_cat + " — " + waf_detail);
+            write_response(conn, r.serialize_h1()); return;
+        }
+    }
+
+#ifdef WITH_MODSEC
+    // ── ModSecurity WAF check (po parse HTTP, przed match_location) ───────────
+    if(g_waf.cfg.enabled && g_waf.loaded){
+        std::string hdr_str;
+        for(auto& h : conn->req.headers.items)
+            hdr_str += std::string(h.first) + ": " + std::string(h.second) + "\r\n";
+        int waf_status = 403;
+        std::string waf_rule;
+        std::string uri_with_query = conn->req.path;
+        if(!conn->req.query.empty()) uri_with_query += "?" + conn->req.query;
+        bool allowed = g_waf.check(
+            conn->client_ip,
+            std::string(method_str(conn->req.method)),
+            uri_with_query,
+            "HTTP/1.1",
+            hdr_str,
+            conn->req.body,
+            &waf_status, &waf_rule
+        );
+        if(!allowed){
+            std::string msg = "WAF: blocked by rule " + waf_rule;
+            auto r = Response::make_json_error(waf_status, msg);
+            write_response(conn, r.serialize_h1()); return;
+        }
+    }
+#endif
+
+    // ── match_location (po WAF — skanery na nieistniejące ścieżki też blokowane) ──
     const LocationConfig* loc = cfg.match_location(srv, conn->req.path);
     if(!loc) {
-        // JSON for /api paths, HTML for everything else
         bool api = conn->req.path.substr(0,4) == "/api";
         auto r = api ? Response::make_json_error(404,"Not found: "+conn->req.path)
                      : Response::make_error(404);
-        // Feed 404 back to autoban for flood detection
         g_autoban.check(conn->client_ip, conn->req.path,
             std::string(conn->req.headers.get("User-Agent")), 404);
         write_response(conn, r.serialize_h1()); return;
@@ -1813,6 +1987,29 @@ static void dispatch(Conn* conn) {
     // ── Static files ──────────────────────────────────────────────────────────
     if(loc->type == LocationType::Static) {
         update_conn_status(conn, 0, "static");
+
+        // ── Cache lookup for static files ────────────────────────────────────
+        if(w->cache && w->config->module_cache && conn->req.method == Method::GET
+           && loc->cache_max_age != -1) {
+            auto key = ResponseCache::make_key(conn->req);
+            if(auto* e = w->cache->get(key)) {
+                if(w->cache->check_conditional(*e, conn->req)) {
+                    Response r; r.status = 304;
+                    if(!e->etag.empty()) r.headers.set("ETag", e->etag);
+                    write_response(conn, r.serialize_h1());
+                    w->stat_cache_hit++;
+                    g_stat_cache_hit.fetch_add(1, std::memory_order_relaxed);
+                    if(w->id<64) g_wstats[w->id].cache_hit.fetch_add(1,std::memory_order_relaxed);
+                    return;
+                }
+                write_response(conn, e->serialized);
+                w->stat_cache_hit++;
+                g_stat_cache_hit.fetch_add(1, std::memory_order_relaxed);
+                if(w->id<64) g_wstats[w->id].cache_hit.fetch_add(1,std::memory_order_relaxed);
+                return;
+            }
+        }
+
         StaticConfig scfg;
         scfg.root = loc->root; scfg.gzip = loc->gzip && w->config->module_gzip; scfg.etag = loc->etag;
         scfg.cache_max_age = loc->cache_max_age; scfg.autoindex = loc->autoindex;
@@ -1822,6 +2019,15 @@ static void dispatch(Conn* conn) {
         if(w->mw && !loc->middlewares.empty() && (w->config->module_lua || w->config->module_js))
             w->mw->run_response(loc->middlewares, conn->req, resp);
         for(auto& l : srv.listens) if(l.http3){ H3Handler::inject_alt_svc(resp,l.port); break; }
+
+        // ── Cache store for static files ─────────────────────────────────────
+        if(w->cache && w->config->module_cache && conn->req.method == Method::GET
+           && loc->cache_max_age != -1 && resp.status == 200) {
+            auto key = ResponseCache::make_key(conn->req);
+            int ttl = loc->cache_max_age > 0 ? loc->cache_max_age : 0;
+            w->cache->put(key, resp, conn->req, ttl);
+        }
+
         write_response(conn, resp.serialize_h1()); return;
     }
 
@@ -1965,9 +2171,8 @@ static void dispatch(Conn* conn) {
                 if(w2->cache && c->req.method == Method::GET) {
                     auto key  = ResponseCache::make_key(c->req);
                     auto* lc3 = w2->config->match_location(srv2, c->req.path);
-                    // cache_max_age == -1 means "cache off" — skip
                     bool do_cache = !lc3 || lc3->cache_max_age != -1;
-                    if(do_cache) {
+                    if(do_cache && w2->config->module_cache) {
                         int ttl = lc3 && lc3->cache_max_age > 0 ? lc3->cache_max_age : 0;
                         w2->cache->put(key, resp, c->req, ttl);
                     }
@@ -2056,79 +2261,6 @@ static void on_connection(uv_stream_t* server, int status) {
 
     uv_tcp_nodelay(&conn->client, 1);
     uv_tcp_keepalive(&conn->client, 1, 60);
-
-    // ── IP Blacklist check ────────────────────────────────────────────────────
-    {
-        std::lock_guard<std::mutex> lk(g_blacklist_mu);
-        if(g_blacklist.count(conn->client_ip)) {
-            NW_DEBUG("blacklist", "Blocked IP: %s", conn->client_ip.c_str());
-            g_stat_err.fetch_add(1, std::memory_order_relaxed);
-            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
-                delete static_cast<Conn*>(h->data); });
-            return;
-        }
-    }
-
-    // ── AutoBan pre-request check ────────────────────────────────────────────
-    {
-        auto ua  = std::string(conn->req.headers.get("User-Agent"));
-        auto verdict = g_autoban.check(conn->client_ip, conn->req.path, ua, 0);
-        if(verdict == AutoBan::Verdict::Ban) {
-            std::lock_guard<std::mutex> lk(g_blacklist_mu);
-            g_blacklist.insert(conn->client_ip);
-            // Drop connection immediately (already logged by on_ban callback)
-            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
-                delete static_cast<Conn*>(h->data); });
-            return;
-        }
-    }
-
-    // ── Built-in regex WAF check ─────────────────────────────────────────────
-    if(g_waf_regex.cfg.enabled && g_waf_regex.compiled){
-        std::string waf_cat, waf_detail;
-        bool allowed = g_waf_regex.check(
-            conn->client_ip,
-            std::string(method_str(conn->req.method)),
-            conn->req.path,
-            conn->req.query,
-            conn->req.body,
-            "",
-            &waf_cat, &waf_detail
-        );
-        if(!allowed){
-            auto r = Response::make_json_error(403,
-                "Blocked by WAF: " + waf_cat + " — " + waf_detail);
-            write_response(conn, r.serialize_h1()); return;
-        }
-    }
-
-#ifdef WITH_MODSEC
-    // ── WAF check ─────────────────────────────────────────────────────────────
-    if(g_waf.cfg.enabled && g_waf.loaded){
-        // Serialize headers for ModSecurity
-        std::string hdr_str;
-        for(auto& h : conn->req.headers.items)
-            hdr_str += h.first + ": " + h.second + "\r\n";
-        int waf_status = 403;
-        std::string waf_rule;
-        std::string uri_with_query = conn->req.path;
-        if(!conn->req.query.empty()) uri_with_query += "?" + conn->req.query;
-        bool allowed = g_waf.check(
-            conn->client_ip,
-            std::string(method_str(conn->req.method)),
-            uri_with_query,
-            "HTTP/1.1",
-            hdr_str,
-            conn->req.body,
-            &waf_status, &waf_rule
-        );
-        if(!allowed){
-            std::string msg = "WAF: blocked by rule " + waf_rule;
-            auto r = Response::make_json_error(waf_status, msg);
-            write_response(conn, r.serialize_h1()); return;
-        }
-    }
-#endif
 
     // ── Per-IP connection limit ───────────────────────────────────────────────
     if(g_max_conns_per_ip > 0) {
@@ -2346,16 +2478,26 @@ int main(int argc, char** argv) {
     if(g_config && !g_config->blacklist_file.empty())
         g_blacklist_file = g_config->blacklist_file;
     blacklist_load();
+    bans_load();
 
     // ── Stats history collector ─────────────────────────────────────────────
     g_stats_timer_running.store(true);
     std::thread stats_thread([](){
+        int flush_counter = 0;
         while(g_stats_timer_running.load()){
             stats_collector_tick();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if(++flush_counter >= 5){
+                flush_counter = 0;
+                if(g_blacklist_dirty.load(std::memory_order_relaxed))
+                    blacklist_flush_sync();
+            }
+            // Sleep in short intervals to react to shutdown quickly
+            for(int i=0; i<10 && g_stats_timer_running.load(); i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     });
-    stats_thread.detach();
+    // stats_thread is joined at shutdown via g_stats_thread handle
+    g_stats_thread = std::move(stats_thread);
     NW_INFO("stats","Stats history collector started");
 
     // ── Built-in regex WAF — always active, no dependencies ──────────────────
@@ -2365,8 +2507,11 @@ int main(int argc, char** argv) {
         g_waf_regex.cfg.check_body = g_config->waf_regex_check_body;
     }
     g_waf_regex.on_block = [](const std::string& ip, const std::string& reason){
-        std::lock_guard<std::mutex> lk(g_blacklist_mu);
-        g_blacklist.insert(ip); blacklist_save();
+        {
+            std::lock_guard<std::mutex> lk(g_blacklist_mu);
+            g_blacklist.insert(ip);
+            blacklist_save_nolock(); // already holding mutex — no recursive lock
+        }
         audit("waf_regex", "waf_regex_block", ip + " — " + reason);
         NW_WARN("waf_regex", "BLOCKED %s — %s", ip.c_str(), reason.c_str());
     };
@@ -2383,10 +2528,17 @@ int main(int argc, char** argv) {
     if(g_config) {
         g_waf.cfg.enabled    = g_config->modsec_enabled;
         g_waf.cfg.block_mode = g_config->modsec_block;
+        NW_INFO("waf", "WAF config: enabled=%s block=%s rules_dir=%s",
+            g_config->modsec_enabled?"true":"false",
+            g_config->modsec_block?"true":"false",
+            g_config->modsec_rules_dir.c_str());
     }
     g_waf.on_block = [](const std::string& ip, const std::string& reason){
-        std::lock_guard<std::mutex> lk(g_blacklist_mu);
-        g_blacklist.insert(ip); blacklist_save();
+        {
+            std::lock_guard<std::mutex> lk(g_blacklist_mu);
+            g_blacklist.insert(ip);
+            blacklist_save_nolock(); // already holding mutex — no recursive lock
+        }
         audit("waf", "waf_block", ip + " — " + reason);
         NW_WARN("waf", "BLOCKED %s — %s", ip.c_str(), reason.c_str());
     };
@@ -2510,12 +2662,18 @@ int main(int argc, char** argv) {
     }
 
     NW_INFO("server", "Shutting down...");
+    // Stop background stats/flush thread first
+    g_stats_timer_running.store(false);
+    if(g_stats_thread.joinable()) g_stats_thread.join();
+    // Signal all worker loops to stop
     for(auto& w : workers)
         if(w->loop) uv_async_send(&w->stop_async);
+    // Join worker threads
     for(auto& t : threads)
         if(t.joinable()) t.join();
-
-    // QuickJS: no global shutdown needed
+    // Final blacklist flush on clean shutdown
+    if(g_blacklist_dirty.load())
+        blacklist_flush_sync();
     NW_INFO("server", "Shutdown complete");
     return 0;
 }

@@ -406,7 +406,7 @@ body.nav-open #nav-overlay { display: block; }
   <div class="logo">
     <div class="logo-mark"><svg viewBox="0 0 16 16"><path d="M2 2h5v2H4v8h8v-3h2v5H2V2z"/><path d="M8 2h6v6h-2V5.4L7.4 10 6 8.6 10.6 4H8V2z"/></svg></div>
     <div class="logo-name">nas<span>-web</span></div>
-    <div class="logo-ver">v2.0.0</div>
+    <div class="logo-ver" id="hdr-version">v2.2.75</div>
   </div>
   <button id="nav-toggle" onclick="toggleNav()" style="display:none" aria-label="Menu">
     <span></span><span></span><span></span>
@@ -420,7 +420,6 @@ body.nav-open #nav-overlay { display: block; }
       letter-spacing:.04em;cursor:default" title="WAF aktywny — ruch filtrowany">
       🛡 SECURED BY WAF
     </div>
-    <div id="hdr-waf-badges" style="display:flex;gap:5px;align-items:center"></div>
     <div class="hdr-time" id="hdr-clock"></div>
     <button id="theme-toggle" onclick="toggleTheme()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;color:var(--dim);font-size:13px;margin-right:6px" title="Toggle light/dark">&#9788;</button>
     <button class="logout-btn" onclick="doLogout()">&#x23CF; logout</button>
@@ -496,6 +495,7 @@ body.nav-open #nav-overlay { display: block; }
     <div class="stat-card blue"><div class="stat-label">Cache Hits</div><div class="stat-val" id="s-cache">—</div><div class="stat-sub" id="s-cache-pct">—</div></div>
     <div class="stat-card orange"><div class="stat-label">Errors</div><div class="stat-val" id="s-err">—</div><div class="stat-sub" id="s-err-pct">—</div></div>
     <div class="stat-card green"><div class="stat-label">Uptime</div><div class="stat-val sm" id="s-uptime">—</div><div class="stat-sub" id="s-workers">—</div></div>
+    <div class="stat-card"><div class="stat-label">RAM (RSS)</div><div class="stat-val sm" id="s-ram">—</div><div class="stat-sub" id="s-cpu">—</div></div>
   </div>
   <!-- WAF stats row -->
   <div id="waf-stat-row" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
@@ -1325,7 +1325,7 @@ response.body = table.concat(stats,"
           <th style="text-align:left;padding:5px 8px;font-weight:500">Szczegół</th>
           <th style="text-align:left;padding:5px 8px;font-weight:500">Akcja</th>
         </tr></thead>
-        <tbody id="autoban-bans-tbody"></tbody>
+        <tbody id="ab-bans-tbody"></tbody>
       </table>
     </div>
   </div>
@@ -1486,11 +1486,17 @@ async function loadAutoban() {
   const d = await api('/np_autoban');
   if(!d) return;
 
-  // Stats
+  // Breakdown per reason from recent_bans
+  const bans = Array.isArray(d.recent_bans) ? d.recent_bans : [];
+  const scanCnt  = bans.filter(b=>b.reason==='scan').length;
+  const uaCnt    = bans.filter(b=>b.reason==='bad_ua').length;
+  const rateCnt  = bans.filter(b=>b.reason==='rate_limit'||b.reason==='404_flood').length;
   const set = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
-  set('ab-total-banned',  d.total_banned  || 0);
-  set('ab-total-blocked', d.total_blocked || 0);
-  set('ab-tracked',       d.tracked_ips   || 0);
+  set('ab-total-bans',   d.total_banned  || 0);
+  set('ab-scan-bans',    scanCnt);
+  set('ab-ua-bans',      uaCnt);
+  set('ab-rate-bans',    rateCnt);
+  set('ab-tracked',      d.tracked_ips   || 0);
 
   // Config
   if(d.config) {
@@ -2143,9 +2149,11 @@ async function renderCache(){
   if(!d){
     set('c-entries','err'); set('c-hits','—'); set('c-ratio','—');
     const ce=document.getElementById('cache-entries');
-    if(ce)ce.innerHTML='<div style="padding:16px;color:var(--warn);text-align:center;font-size:12px">Failed to load — check server logs</div>';
+    if(ce)ce.innerHTML='<div style="padding:16px;color:var(--warn);text-align:center;font-size:12px">Błąd /np_cache — sprawdź czy serwer działa</div>';
     return;
   }
+  // Debug: log what we got
+  console.debug('/np_cache:', JSON.stringify(d).slice(0,120));
   const used=d.entries||0, max=d.max||1024;
   const hits=d.hits||0, misses=d.misses||0, evictions=d.evictions||0;
   const bytes=d.bytes_stored||0;
@@ -2166,7 +2174,7 @@ async function renderCache(){
   const ce=document.getElementById('cache-entries');
   if(!ce) return;
   ce.innerHTML=entries.length===0
-    ? '<div style="padding:16px;color:var(--dim);text-align:center;font-size:12px">Cache pusty — brak cacheowalnych odpowiedzi<br><span style=\'font-size:10px;opacity:.6\'>Cache działa dla GET z Cache-Control: max-age lub gdy lokacja ma ustawione <code>cache max_age=30;</code></span></div>'
+    ? '<div style="padding:16px;color:var(--dim);text-align:center;font-size:12px">Cache pusty<br><span style=\'font-size:10px;opacity:.6\'>Jeśli backend zwraca <code>Cache-Control: no-cache</code>, dodaj do lokacji w konfigu:<br><code>cache max_age=60;</code> — to wymusi cachowanie ignorując nagłówki backendu.<br>Cache działa tylko dla GET, status 200. <code>no-store</code> jest zawsze respektowane.</span></div>'
     : entries.map(e=>`
     <div class="cache-entry">
       <div class="cache-key">${e.path}</div>
@@ -2616,7 +2624,7 @@ function renderSysInfo(d){
   const mods = d&&d.modules ? d.modules : {};
   const cards=[
     {title:'Server',rows:[
-      ['Binary','/usr/local/bin/nas-web'],['Version','2.0.0'],['Build','C++20 + libuv'],
+      ['Binary','/usr/local/bin/nas-web'],['Version', (window._nasVersion||'2.2.75')],['Build','C++20 + libuv'],
       ['Config','/etc/nas-web/nas-web.conf'],['PID',d?'running':'—'],['Uptime',d?fmtUp(d.uptime||0):'—'],
     ]},
     {title:'Modules',rows:[
@@ -2887,64 +2895,29 @@ function animateRefresh(ms){
 
 
 async function updateWafHeaderBadges(){
-  const container = document.getElementById('hdr-waf-badges');
-  const secBadge  = document.getElementById('hdr-secured-badge');
-  if(!container) return;
-
-  const badges = [];
+  const secBadge = document.getElementById('hdr-secured-badge');
+  if(!secBadge) return;
   let anyBlock = false;
-
-  // Regex WAF
   try {
     const r = await api('/np_waf_regex');
-    if(r && r.compiled){
-      if(r.enabled){
-        const block = !!r.block_mode;
-        if(block) anyBlock = true;
-        const col  = block ? '#ff4444' : '#cc44ff';
-        const bg   = block ? 'rgba(255,68,68,.15)' : 'rgba(200,70,255,.12)';
-        const bord = block ? 'rgba(255,68,68,.35)' : 'rgba(200,70,255,.35)';
-        const mode = block ? 'BLOCK' : 'DETECT';
-        badges.push(`<span class="waf-badge" style="background:${bg};border:1px solid ${bord};color:${col}"
-          title="WAF Regex: ${mode}&#10;Zablokowanych: ${r.total_blocked||0}&#10;Checked: ${r.total_checked||0}">
-          🔍 ${mode}</span>`);
-      } else {
-        badges.push(`<span class="waf-badge" style="background:rgba(80,80,80,.12);border:1px solid var(--border);color:var(--dim)"
-          title="WAF Regex wyłączony">🔍 OFF</span>`);
-      }
-    }
+    if(r && r.compiled && r.enabled && r.block_mode) anyBlock = true;
   } catch(e){}
-
-  // ModSecurity
   try {
     const m = await api('/np_waf');
-    if(m && m.loaded){
-      if(m.enabled){
-        const block = !!m.block_mode;
-        if(block) anyBlock = true;
-        const col  = block ? '#ff8800' : '#cc44ff';
-        const bg   = block ? 'rgba(255,136,0,.15)' : 'rgba(200,70,255,.12)';
-        const bord = block ? 'rgba(255,136,0,.35)' : 'rgba(200,70,255,.35)';
-        const mode = block ? 'BLOCK' : 'DETECT';
-        badges.push(`<span class="waf-badge" style="background:${bg};border:1px solid ${bord};color:${col}"
-          title="ModSecurity: ${mode}&#10;Reguł: ${m.rules_count||0}&#10;Zablokowanych: ${m.total_blocked||0}">
-          🛡 ModSec ${mode}</span>`);
-      } else {
-        badges.push(`<span class="waf-badge" style="background:rgba(80,80,80,.12);border:1px solid var(--border);color:var(--dim)"
-          title="ModSecurity załadowany, wyłączony">🛡 OFF</span>`);
-      }
-    }
+    if(m && m.loaded && m.enabled && m.block_mode) anyBlock = true;
   } catch(e){}
-
-  container.innerHTML = badges.join('');
-
-  // "Secured by WAF" — widoczny gdy co najmniej jeden WAF w trybie BLOCK
-  if(secBadge) secBadge.style.display = anyBlock ? 'flex' : 'none';
+  secBadge.style.display = anyBlock ? 'flex' : 'none';
 }
 
 async function fetchAll(){
   const d=await api('/np_status');
   if(!d){document.getElementById('hdr-status').textContent='error';return;}
+  // Aktualizuj wersję w headerze
+  if(d.version){
+    window._nasVersion = d.version;
+    const verEl = document.getElementById('hdr-version');
+    if(verEl) verEl.textContent = 'v' + d.version;
+  }
   const now=Date.now();
   // rps — use server-provided value (aggregated across all workers)
   const rps = d.req_per_sec || 0;
@@ -2957,12 +2930,16 @@ async function fetchAll(){
   set('s-req',fmt(d.requests)); set('s-rps',rps+' req/s');
   set('s-cache',fmt(d.cache_hits||0)); set('s-err',fmt(d.errors||0));
   set('s-uptime',fmtUp(d.uptime||0)); set('s-workers',(d.workers||1)+' workers');
+  set('s-ram', ((d.rss_kb||0)/1024).toFixed(1)+' MB');
+  set('s-cpu', Math.round((d.cpu_ms||0)/1000)+'s CPU');
   const tot=d.requests||1,cP=Math.round((d.cache_hits||0)/tot*100),eP=Math.round((d.errors||0)/tot*100);
   set('s-cache-pct',cP+'% hit rate'); set('s-err-pct',eP+'% error rate');
   gauge('g-cache',cP,'g-cache-txt');gauge('g-err',eP,'g-err-txt');
   gauge('g-ok',Math.max(0,100-eP),'g-ok-txt');
   gauge('g-w',Math.min(100,(d.workers||1)/4*100),'g-w-txt',d.workers||1);
-  renderWorkers(d);renderConns();renderCache();renderSysInfo(d);
+  renderWorkers(d);renderConns();renderSysInfo(d);
+  // Cache tab: odśwież tylko gdy aktywna (cache ma własny 1s timer)
+  if(document.getElementById('sec-cache')?.classList.contains('active')) renderCache();
   // upstream
   const setEl=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
   setEl('up-req',fmt(d.requests||0));
@@ -2970,9 +2947,8 @@ async function fetchAll(){
   setEl('up-lat','<1ms');
   addAccessLog();
   updateWafHeaderBadges();
-  // Update WAF dashboard cards jeśli tab aktywny
-  const dashEl = document.getElementById('sec-dashboard');
-  if(dashEl && dashEl.classList.contains('active')) updateWafDashboard();
+  // Update WAF cards — zawsze (widoczne w Overview i Dashboard)
+  updateWafDashboard();
 }
 
 function init(){

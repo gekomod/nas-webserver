@@ -19,7 +19,11 @@
 #include <algorithm>
 #include <sstream>
 
-inline constexpr std::string_view NP_VERSION = "2.0.0";
+#ifdef NAS_WEB_VERSION
+inline constexpr std::string_view NP_VERSION = NAS_WEB_VERSION;
+#else
+inline constexpr std::string_view NP_VERSION = "2.2.77";
+#endif
 inline constexpr std::string_view NP_NAME    = "nas-web";
 
 // ── Buffer sizes ──────────────────────────────────────────────────────────────
@@ -189,7 +193,7 @@ body{background:#0a0b0d;color:#c8d0e0;font-family:'JetBrains Mono',monospace,san
   <div class="hint">%s</div>
   %s
   <a class="back" href="/">&#8592; Go back home</a>
-  <div class="server">nas-web/2.0.0</div>
+  <div class="server">nas-web/2.2.77</div>
 </div>
 </body>
 </html>)HTML",

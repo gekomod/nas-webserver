@@ -4,20 +4,18 @@
 //  LRU hash map, per-worker (zero locking on read path)
 // ─────────────────────────────────────────────────────────────────────────────
 #include "../../include/np_types.hh"
-#include <atomic>
-
-// Global cache stats — defined here as weak symbols so test_cache.cc gets them
-// server.cc declares them before #include-ing this file, so they're shared there
-#ifndef NAS_WEB_SERVER_CC
-static std::atomic<uint64_t> g_stat_cache_hit{0};
-static std::atomic<uint64_t> g_stat_cache_miss{0};
-static std::atomic<uint64_t> g_stat_cache_entries{0};
-#endif
 #include <list>
 #include <unordered_map>
 #include <ctime>
 #include <cstdio>
 #include <sstream>
+#include <atomic>
+
+// Defined in server.cc when included from there; standalone fallback for tests
+#ifndef G_STAT_CACHE_ENTRIES_DEFINED
+#define G_STAT_CACHE_ENTRIES_DEFINED
+static std::atomic<uint64_t> g_stat_cache_entries{0};
+#endif
 
 struct CacheEntry {
     std::string key;
@@ -50,29 +48,29 @@ public:
 
     const CacheEntry* get(const std::string& key){
         auto it=map_.find(key);
-        if(it==map_.end()){
-            stats_.misses++;
-            g_stat_cache_miss.fetch_add(1, std::memory_order_relaxed);
-            return nullptr;
-        }
+        if(it==map_.end()){stats_.misses++;return nullptr;}
         auto& lit=it->second;
         if(time(nullptr)>lit->second.expires){
-            evict(it); stats_.misses++;
-            g_stat_cache_miss.fetch_add(1, std::memory_order_relaxed);
-            return nullptr;
+            evict(it); stats_.misses++; return nullptr;
         }
         lru_.splice(lru_.begin(),lru_,lit);
         stats_.hits++;
-        g_stat_cache_hit.fetch_add(1, std::memory_order_relaxed);
         return &lit->second;
     }
 
     bool put(const std::string& key, const Response& resp,
               const Request& req, int ttl_override=0){
+
+        // When ttl_override > 0 (set via location cache_max_age), force cache
+        // even if backend says no-cache — operator explicitly opted in
         bool force = (ttl_override > 0);
-        if(!is_cacheable(resp,req,force)) return false;
+        if(!is_cacheable(resp, req, force)){
+            return false;
+        }
         int ttl=ttl_override>0?ttl_override:get_ttl(resp);
-        if(ttl <= 0) return false; // nothing to cache without a TTL
+        if(ttl <= 0){
+            return false;
+        }
         while((int)map_.size()>=max_) evict_lru();
 
         auto it=map_.find(key);
@@ -135,13 +133,12 @@ public:
         g_stat_cache_entries.store(0, std::memory_order_relaxed);
     }
 
-    // Iterate entries for admin panel (key, size_bytes, ttl_remaining_sec, hits)
     template<typename F>
     void each_entry(F&& fn) const {
         time_t now = time(nullptr);
         int count = 0;
         for(auto& [key, e] : lru_) {
-            if(++count > 50) break; // max 50 entries in panel
+            if(++count > 50) break;
             int ttl_left = (int)std::max((time_t)0, e.expires - now);
             fn(key, e.size, ttl_left, (uint64_t)0);
         }
@@ -164,14 +161,33 @@ public:
 
 private:
     static bool is_cacheable(const Response& resp, const Request& req, bool force=false){
-        if(req.method!=Method::GET&&req.method!=Method::HEAD) return false;
+        if(req.method!=Method::GET&&req.method!=Method::HEAD){
+            fprintf(stderr,"[CACHE] not cacheable: method=%d\n",(int)req.method);
+            return false;
+        }
         int s=resp.status;
-        if(s!=200&&s!=203&&s!=204&&s!=206&&s!=301&&s!=404&&s!=410) return false;
+        if(s!=200&&s!=203&&s!=204&&s!=206&&s!=301&&s!=404&&s!=410){
+            fprintf(stderr,"[CACHE] not cacheable: status=%d\n",s);
+            return false;
+        }
         auto cc=resp.headers.get("Cache-Control");
         if(!cc.empty()){
-            if(cc.find("no-store")!=std::string_view::npos)  return false; // always respect no-store
-            if(!force && cc.find("private")!=std::string_view::npos)  return false;
-            if(!force && cc.find("no-cache")!=std::string_view::npos) return false;
+            // no-store is always respected — backend explicitly forbids caching
+            if(cc.find("no-store")!=std::string_view::npos){
+                fprintf(stderr,"[CACHE] not cacheable: no-store\n");
+                return false;
+            }
+            // private/no-cache: respected unless location config forces cache (cache_max_age set)
+            if(!force){
+                if(cc.find("private")!=std::string_view::npos){
+                    fprintf(stderr,"[CACHE] not cacheable: private\n");
+                    return false;
+                }
+                if(cc.find("no-cache")!=std::string_view::npos){
+                    fprintf(stderr,"[CACHE] not cacheable: no-cache\n");
+                    return false;
+                }
+            }
         }
         return true;
     }
