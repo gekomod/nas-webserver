@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](https://en.cppreference.com/w/cpp/20)
 [![Debian 12](https://img.shields.io/badge/Debian-12-red)](https://www.debian.org/)
+[![CodeQL Security Scan](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml)
 
 Lekki, event-driven reverse proxy napisany w C++20 z myślą o NAS-ach i maszynach z ograniczonymi zasobami. Alternatywa dla nginx/Caddy gdy zależy Ci na pełnej kontroli i minimalnym footprintcie.
 
