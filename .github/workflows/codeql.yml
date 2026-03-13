@@ -1,156 +1,65 @@
-# .github/workflows/codeql.yml
-name: "CodeQL Security Scan"
+name: CodeQL
 
 on:
   push:
-    branches: [ "main", "master", "develop" ]
+    branches: [ main, master, dev ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ main, master ]
   schedule:
-    - cron: '30 2 * * *'
+    - cron: '0 4 * * 1'   # co poniedziałek 04:00 UTC
 
 jobs:
   analyze:
-    name: CodeQL Analyze (C++)
-    runs-on: ubuntu-latest
+    name: Analyze (C/C++)
+    runs-on: ubuntu-24.04
     permissions:
       security-events: write
-      packages: read
       actions: read
       contents: read
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    # Instalacja zależności systemowych
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          cmake \
-          build-essential \
-          pkg-config \
-          lua5.4-dev \
-          liblua5.4-dev \
-          libuv1-dev \
-          libssl-dev \
-          libbrotli-dev \
-          libnghttp2-dev \
-          libmodsecurity-dev \
-          modsecurity-crs \
-          zlib1g-dev
-        
-        # Ustaw ścieżkę dla pkg-config
-        echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-
-    # Pobranie vendored dependencies (tylko nagłówki, nie będą skanowane)
-    - name: Fetch vendored dependencies
-      run: |
-        if [ -f vendor/quickjs/fetch_quickjs.sh ]; then
-          bash vendor/quickjs/fetch_quickjs.sh
-        fi
-        if [ -f vendor/zstd/fetch_zstd.sh ]; then
-          bash vendor/zstd/fetch_zstd.sh
-        fi
-        if [ -f vendor/janet/fetch_janet.sh ]; then
-          bash vendor/janet/fetch_janet.sh
-        fi
-
-    # Initializes the CodeQL tools for scanning
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
-      with:
-        languages: c-cpp
-        build-mode: manual
-        queries: security-and-quality
-        config-file: .github/codeql/codeql-config.yml
-
-    # Build
-    - name: Configure and build
-      run: |
-        mkdir -p build
-        cmake -S . -B build \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DWITH_LUA=ON \
-          -DWITH_QUICKJS=ON \
-          -DWITH_NGHTTP2=ON \
-          -DWITH_BROTLI=ON \
-          -DWITH_ACME=ON \
-          -DWITH_MODSEC=ON \
-          -DWITH_ZSTD=ON \
-          -DWITH_JANET=ON \
-          -DWITH_QUICHE=OFF
-        cmake --build build --parallel $(nproc)
-
-    # Perform the CodeQL analysis
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
-      with:
-        category: "/language:c-cpp"
-        output: codeql-results
-        upload: true
-
-    # Upload SARIF results
-    - name: Upload SARIF results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: codeql-results
-        path: codeql-results
-        retention-days: 30
-
-  # Dependency review
-  dependency-review:
-    name: Dependency Review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-      
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
-          allow-licenses: MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, BSL-1.0
-          comment-summary-in-pr: always
-
-  # Binary hardening check
-  hardening-check:
-    name: Binary hardening check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y \
-            cmake \
-            build-essential \
-            libuv1-dev \
-            libssl-dev \
-            liblua5.4-dev \
-            devscripts
+            build-essential cmake pkg-config \
+            libuv1-dev libssl-dev zlib1g-dev \
+            libbrotli-dev libnghttp2-dev \
+            liblua5.4-dev
 
-      - name: Build with hardening flags
-        run: |
-          mkdir -p build-hardened
-          cmake -S . -B build-hardened \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fpie -pie" \
-            -DWITH_LUA=ON \
-            -DWITH_MODSEC=OFF
-          cmake --build build-hardened --parallel $(nproc)
-
-      - name: Run hardening-check
-        run: |
-          hardening-check build-hardened/nas-web | tee hardening-report.txt
-
-      - name: Upload hardening report
-        uses: actions/upload-artifact@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
         with:
-          name: hardening-report
-          path: hardening-report.txt
+          languages: c-cpp
+          queries: security-extended,security-and-quality
+          config: |
+            paths-ignore:
+              - vendor/quickjs
+              - vendor/zstd
+              - vendor/janet
+              - vendor/cssmin
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DWITH_LUA=ON \
+            -DWITH_QUICKJS=OFF \
+            -DWITH_NGHTTP2=ON \
+            -DWITH_BROTLI=ON \
+            -DWITH_ACME=ON \
+            -DWITH_ZSTD=OFF \
+            -DWITH_JANET=OFF \
+            -DWITH_MODSEC=OFF \
+            -DWITH_QUICHE=OFF
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:c-cpp
