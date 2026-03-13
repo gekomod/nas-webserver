@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(nas-web VERSION 2.2.83 LANGUAGES CXX C)
+project(nas-web VERSION 2.2.84 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

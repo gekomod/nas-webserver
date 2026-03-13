@@ -266,8 +266,8 @@ private:
         lua_setglobal(L,"np");
     }
 
-    // Lua hook for CPU timeout
-    static void timeout_hook(lua_State* l, lua_Debug*){
+    // Lua hook for CPU timeout — passed by pointer to lua_sethook(), not called directly
+    static void timeout_hook(lua_State* l, [[maybe_unused]] lua_Debug* ar){
         lua_pushstring(l,"Script timeout");
         lua_error(l);
     }

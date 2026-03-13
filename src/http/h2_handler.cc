@@ -163,6 +163,7 @@ private:
         return r;
     }
 
+    // Registered via nghttp2_session_callbacks_set_* - not called directly
     static int begin_headers_cb(nghttp2_session*, const nghttp2_frame* frame,
                                   void* ud){
         auto* h = (H2Handler*)ud;
@@ -175,6 +176,7 @@ private:
         return 0;
     }
 
+    // Registered via nghttp2_session_callbacks_set_* - not called directly
     static int header_cb(nghttp2_session*, const nghttp2_frame* frame,
                           const uint8_t* name, size_t nlen,
                           const uint8_t* value, size_t vlen,
@@ -203,6 +205,7 @@ private:
         return 0;
     }
 
+    // Registered via nghttp2_session_callbacks_set_* - not called directly
     static int data_chunk_cb(nghttp2_session*, uint8_t, int32_t stream_id,
                                const uint8_t* data, size_t len, void* ud){
         auto* h = (H2Handler*)ud;
@@ -211,6 +214,7 @@ private:
         return 0;
     }
 
+    // Registered via nghttp2_session_callbacks_set_* - not called directly
     static int frame_recv_cb(nghttp2_session*, const nghttp2_frame* frame,
                                void* ud){
         auto* h = (H2Handler*)ud;
@@ -235,6 +239,7 @@ private:
         return 0;
     }
 
+    // Registered via nghttp2_session_callbacks_set_* - not called directly
     static int stream_close_cb(nghttp2_session*, int32_t stream_id,
                                  uint32_t, void* ud){
         auto* h = (H2Handler*)ud;

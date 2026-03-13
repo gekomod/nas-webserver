@@ -1,3 +1,19 @@
+nas-web (2.2.84-1) stable; urgency=low
+
+  * README.md: kompletna dokumentacja GitHub (features, config, scripting, endpoints)
+  * .github/workflows/codeql.yml: CodeQL C/C++ analiza (security-extended)
+  * .github/workflows/build.yml: CI build matrix (Release + Debug)
+  * .github/CODEQL_NOTES.md: dokumentacja spodziewanych wyników i suppressions
+  * CodeQL fixes:
+    - waf_regex.hh: catch(...){} -> catch(const std::regex_error&) (6 miejsc)
+    - server.cc: catch(...){} -> catch(const std::exception&) (5 miejsc)
+    - v8_engine.cc: [[maybe_unused]] na parametrach stub metod, usunieto JS_RUNTIME
+    - lua_engine.cc: [[maybe_unused]] na lua_Debug* w timeout_hook
+    - h2_handler.cc: komentarze przy callbackach nghttp2 (rejestrowane przez wskaznik)
+    - config_parser.cc: stale nazwane zamiast magic numbers (8080, 3000, 1, 3, 30)
+
+ -- NAS Panel Team <admin@localhost>  Fri, 13 Mar 2026 18:00:00 +0100
+
 nas-web (2.2.83-1) stable; urgency=low
 
   * Nowe moduły vendor:

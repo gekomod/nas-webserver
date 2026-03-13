@@ -583,7 +583,7 @@ static void write_response(Conn* conn, std::string data) {
         if(conn->response_data.size() > 12) {
             auto sp = conn->response_data.find(' ');
             if(sp != std::string::npos && sp+4 <= conn->response_data.size())
-                try { status_code = std::stoi(conn->response_data.substr(sp+1,3)); } catch(...){}
+                try { status_code = std::stoi(conn->response_data.substr(sp+1,3)); } catch(const std::exception&){}
         }
         if(status_code != 401) {
             g_stat_req.fetch_add(1, std::memory_order_relaxed);
@@ -856,9 +856,9 @@ static void dispatch(Conn* conn) {
                 auto e=qs.find('&',p);
                 return qs.substr(p+k.size(), e==std::string::npos?std::string::npos:e-p-k.size());
             };
-            auto lv_s=parse_param("level"); if(!lv_s.empty()) try{min_lv=std::stoi(lv_s);}catch(...){}
-            auto si_s=parse_param("since"); if(!si_s.empty()) try{since=std::stoll(si_s);}catch(...){}
-            auto li_s=parse_param("limit"); if(!li_s.empty()) try{limit=std::stoul(li_s);}catch(...){}
+            auto lv_s=parse_param("level"); if(!lv_s.empty()) try{min_lv=std::stoi(lv_s);}catch(const std::exception&){}
+            auto si_s=parse_param("since"); if(!si_s.empty()) try{since=std::stoll(si_s);}catch(const std::exception&){}
+            auto li_s=parse_param("limit"); if(!li_s.empty()) try{limit=std::stoul(li_s);}catch(const std::exception&){}
         }
         std::string body = g_log.to_json(min_lv, since, limit);
         Response r; r.status=200;
@@ -1657,7 +1657,7 @@ static void dispatch(Conn* conn) {
             auto& qs = conn->req.query;
             auto p = qs.find("count=");
             if(p != std::string::npos) {
-                try { count = std::stoul(qs.substr(p+6)); } catch(...) {}
+                try { count = std::stoul(qs.substr(p+6)); } catch(const std::exception&) {}
                 if(count > 3600) count = 3600;
                 if(count < 1)    count = 1;
             }

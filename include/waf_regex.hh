@@ -91,7 +91,7 @@ struct WafRegexEngine {
         };
         for(auto& r : sqli_raw) {
             try { sqli.patterns.emplace_back(r, flag); sqli.raw.push_back(r); }
-            catch(...) {}
+            catch(const std::regex_error&) { /* invalid regex pattern - skip */ }
         }
         pattern_sets.push_back(std::move(sqli));
 
@@ -127,7 +127,7 @@ struct WafRegexEngine {
         };
         for(auto& r : xss_raw) {
             try { xss.patterns.emplace_back(r, flag); xss.raw.push_back(r); }
-            catch(...) {}
+            catch(const std::regex_error&) { /* invalid regex pattern - skip */ }
         }
         pattern_sets.push_back(std::move(xss));
 
@@ -145,7 +145,7 @@ struct WafRegexEngine {
         };
         for(auto& r : pt_raw) {
             try { pt.patterns.emplace_back(r, flag); pt.raw.push_back(r); }
-            catch(...) {}
+            catch(const std::regex_error&) { /* invalid regex pattern - skip */ }
         }
         pattern_sets.push_back(std::move(pt));
 
@@ -165,7 +165,7 @@ struct WafRegexEngine {
         };
         for(auto& r : ci_raw) {
             try { ci.patterns.emplace_back(r, flag); ci.raw.push_back(r); }
-            catch(...) {}
+            catch(const std::regex_error&) { /* invalid regex pattern - skip */ }
         }
         pattern_sets.push_back(std::move(ci));
 
@@ -184,7 +184,7 @@ struct WafRegexEngine {
         };
         for(auto& r : ssrf_raw) {
             try { ssrf.patterns.emplace_back(r, flag); ssrf.raw.push_back(r); }
-            catch(...) {}
+            catch(const std::regex_error&) { /* invalid regex pattern - skip */ }
         }
         pattern_sets.push_back(std::move(ssrf));
 
@@ -198,7 +198,7 @@ struct WafRegexEngine {
         };
         for(auto& r : xxe_raw) {
             try { xxe.patterns.emplace_back(r, flag); xxe.raw.push_back(r); }
-            catch(...) {}
+            catch(const std::regex_error&) { /* invalid regex pattern - skip */ }
         }
         pattern_sets.push_back(std::move(xxe));
 

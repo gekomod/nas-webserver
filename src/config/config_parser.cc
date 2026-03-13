@@ -294,11 +294,18 @@ std::shared_ptr<Config> parse_config(const std::string& path){
 }
 
 std::shared_ptr<Config> default_config(){
+    static constexpr int DEFAULT_PORT         = 8080;
+    static constexpr int DEFAULT_BACKEND_PORT = 3000;
+    static constexpr int DEFAULT_WEIGHT       = 1;
+    static constexpr int DEFAULT_MAX_FAILS    = 3;
+    static constexpr int DEFAULT_FAIL_TIMEOUT = 30;
+
     auto cfg=std::make_shared<Config>();
     UpstreamConfig up; up.name="node_app";
-    up.servers.push_back({"127.0.0.1",3000,1,3,30});
+    up.servers.push_back({"127.0.0.1", DEFAULT_BACKEND_PORT,
+                          DEFAULT_WEIGHT, DEFAULT_MAX_FAILS, DEFAULT_FAIL_TIMEOUT});
     cfg->upstreams.push_back(up);
-    ServerConfig srv; srv.listens.push_back({8080,false,false,false,true});
+    ServerConfig srv; srv.listens.push_back({DEFAULT_PORT,false,false,false,true});
     LocationConfig loc; loc.prefix="/"; loc.type=LocationType::Proxy;
     loc.upstream="node_app"; loc.websocket=true;
     srv.locations.push_back(loc);
