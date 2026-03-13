@@ -234,60 +234,78 @@ struct WafEngine {
             modsecurity::msc_process_request_body(tx);
         }
 
-        // ── Check intervention ────────────────────────────────────────────────
-        modsecurity::ModSecurityIntervention intervention;
-        memset(&intervention, 0, sizeof(intervention));
-        intervention.status = 200;
+        // ── // Check intervention after each phase
+        // ModSec v3: msc_intervention() checked after URI/headers/body phases.
+        // One call at end misses phase-1/2 detections.
+        // Events recorded in both BLOCK and DETECT mode.
+
+        auto extract_tag = [](const std::string& log, const std::string& tag) -> std::string {
+            std::string needle = "[" + tag + " \"";
+            auto p = log.find(needle);
+            if(p == std::string::npos) return "";
+            p += needle.size();
+            auto e = log.find("\"", p);
+            return e != std::string::npos ? log.substr(p, e-p) : "";
+        };
+
+        auto check_itv = [&](modsecurity::Transaction* tx_) -> bool {
+            modsecurity::ModSecurityIntervention itv;
+            memset(&itv, 0, sizeof(itv));
+            itv.status = 200;
+            if(!modsecurity::msc_intervention(tx_, &itv)) return false;
+            if(itv.status < 400) {
+                if(itv.log) free(itv.log);
+                if(itv.url) free(itv.url);
+                return false;
+            }
+
+            total_detected.fetch_add(1, std::memory_order_relaxed);
+            bool do_block = cfg.block_mode;
+            if(do_block) total_blocked.fetch_add(1, std::memory_order_relaxed);
+
+            std::string rule_id, message, severity;
+            if(itv.log) {
+                std::string log_str(itv.log);
+                rule_id  = extract_tag(log_str, "id");
+                message  = extract_tag(log_str, "msg");
+                severity = extract_tag(log_str, "severity");
+                if(message.empty()) {
+                    // Fallback: use first part of raw log
+                    message = log_str.substr(0, 150);
+                    auto nl = message.find('\n');
+                    if(nl != std::string::npos) message = message.substr(0, nl);
+                }
+                free(itv.log);
+            }
+            if(itv.url) free(itv.url);
+
+            if(out_status)  *out_status  = itv.status;
+            if(out_rule_id) *out_rule_id = rule_id;
+
+            // Record event in both BLOCK and DETECT mode
+            WafEvent ev;
+            ev.ts       = time(nullptr);
+            ev.ip       = client_ip;
+            ev.method   = method;
+            ev.uri      = uri.substr(0, 200);
+            ev.rule_id  = rule_id.empty()  ? "?" : rule_id;
+            ev.message  = message.empty()  ? "WAF detection" : message;
+            ev.severity = severity.empty() ? "WARNING" : severity;
+            ev.status   = itv.status;
+            {
+                std::lock_guard<std::mutex> lk(events_mu);
+                events.push_back(ev);
+                if((int)events.size() > 200) events.pop_front();
+            }
+
+            if(do_block && on_block)
+                on_block(client_ip, "WAF rule " + ev.rule_id + ": " + ev.message);
+
+            return do_block;
+        };
 
         bool blocked = false;
-        if(modsecurity::msc_intervention(tx, &intervention)){
-            if(intervention.status == 403 || intervention.status/100 == 4){
-                blocked = cfg.block_mode;
-                total_detected.fetch_add(1, std::memory_order_relaxed);
-                if(blocked) total_blocked.fetch_add(1, std::memory_order_relaxed);
-
-                // Collect rule info from intervention log
-                std::string rule_id, message, severity;
-                if(intervention.log){
-                    std::string log_str(intervention.log);
-                    // Extract [id "NNNNNN"] and [msg "..."]
-                    auto extract = [&](const std::string& tag) -> std::string {
-                        auto p = log_str.find("["+tag+" \"");
-                        if(p == std::string::npos) return "";
-                        p += tag.size() + 3;
-                        auto e = log_str.find("\"", p);
-                        return e != std::string::npos ? log_str.substr(p, e-p) : "";
-                    };
-                    rule_id  = extract("id");
-                    message  = extract("msg");
-                    severity = extract("severity");
-                    free(intervention.log);
-                }
-                if(intervention.url) free(intervention.url);
-
-                if(out_status)  *out_status  = intervention.status;
-                if(out_rule_id) *out_rule_id = rule_id;
-
-                // Record event
-                WafEvent ev;
-                ev.ts       = time(nullptr);
-                ev.ip       = client_ip;
-                ev.method   = method;
-                ev.uri      = uri.substr(0, 200);
-                ev.rule_id  = rule_id.empty() ? "?" : rule_id;
-                ev.message  = message.empty() ? "WAF block" : message;
-                ev.severity = severity;
-                ev.status   = intervention.status;
-                {
-                    std::lock_guard<std::mutex> lk(events_mu);
-                    events.push_back(ev);
-                    if((int)events.size() > 200) events.pop_front();
-                }
-
-                if(blocked && on_block)
-                    on_block(client_ip, "WAF rule " + ev.rule_id + ": " + ev.message);
-            }
-        }
+        if(check_itv(tx)) blocked = true;
 
         modsecurity::msc_transaction_cleanup(tx);
         return !blocked;

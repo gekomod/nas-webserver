@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(nas-web VERSION 2.2.77 LANGUAGES CXX C)
+project(nas-web VERSION 2.2.83 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,8 @@ option(WITH_LUA     "Embed Lua 5.4 scripting"     ON)
 option(WITH_QUICKJS "Embed QuickJS JS engine"      ON)
 option(WITH_NGHTTP2 "HTTP/2 support (nghttp2)"    ON)
 option(WITH_QUICHE  "HTTP/3 support (quiche)"     OFF)
+option(WITH_ZSTD    "zstd compression (vendored)" OFF)
+option(WITH_JANET   "Janet WAF scripting (vendored)" OFF)
 
 add_compile_options(-Wall -Wextra -Wno-unused-parameter -O2 -g)
 
@@ -74,9 +76,24 @@ if(WITH_LUA)
         list(APPEND INCS ${LUA_INCLUDE_DIRS})
         list(APPEND DEPS ${LUA_LIBRARIES})
         list(APPEND DEFS HAVE_LUA)
-        message(STATUS "Lua 5.4 found")
+        message(STATUS "Lua 5.4 found (pkg-config)")
     else()
-        message(STATUS "Lua 5.4 NOT found - using stub")
+        # Fallback: szukaj ręcznie (Debian/Ubuntu: /usr/include/lua5.4)
+        find_path(LUA_INC lua.h
+            PATHS /usr/include/lua5.4 /usr/local/include/lua5.4
+                  /usr/include /usr/local/include
+            PATH_SUFFIXES lua5.4 lua)
+        find_library(LUA_LIB NAMES lua5.4 lua
+            PATHS /usr/lib /usr/local/lib
+                  /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu)
+        if(LUA_INC AND LUA_LIB)
+            list(APPEND INCS ${LUA_INC})
+            list(APPEND DEPS ${LUA_LIB})
+            list(APPEND DEFS HAVE_LUA)
+            message(STATUS "Lua 5.4 found (manual: ${LUA_LIB})")
+        else()
+            message(STATUS "Lua 5.4 NOT found - using stub (install liblua5.4-dev)")
+        endif()
     endif()
 endif()
 
@@ -147,12 +164,77 @@ if(WITH_QUICHE)
     endif()
 endif()
 
+# ── zstd (vendored) ───────────────────────────────────────────────────────────
+if(WITH_ZSTD)
+    set(ZSTD_VENDOR "${CMAKE_SOURCE_DIR}/vendor/zstd")
+    if(EXISTS "${ZSTD_VENDOR}/lib/zstd.h")
+        # Collect all .c files from lib/ subdirs
+        file(GLOB_RECURSE ZSTD_SRCS
+            "${ZSTD_VENDOR}/lib/common/*.c"
+            "${ZSTD_VENDOR}/lib/compress/*.c"
+            "${ZSTD_VENDOR}/lib/decompress/*.c"
+        )
+        add_library(zstd_vendor STATIC ${ZSTD_SRCS})
+        target_include_directories(zstd_vendor PUBLIC "${ZSTD_VENDOR}/lib")
+        target_compile_options(zstd_vendor PRIVATE
+            -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable
+            -Wno-implicit-fallthrough -Wno-missing-field-initializers)
+        list(APPEND INCS "${ZSTD_VENDOR}/lib")
+        list(APPEND DEFS HAVE_ZSTD=1)
+        set(ZSTD_LINK_LIB zstd_vendor)
+        message(STATUS "zstd: vendored source -> compression ENABLED")
+    else()
+        # Stub only — compiles, zstd calls return errors
+        list(APPEND INCS "${ZSTD_VENDOR}")
+        message(STATUS "zstd: stub (run vendor/zstd/fetch_zstd.sh to enable)")
+    endif()
+else()
+    list(APPEND INCS "${CMAKE_SOURCE_DIR}/vendor/zstd")
+    message(STATUS "zstd: stub (WITH_ZSTD=OFF)")
+endif()
+
+# ── Janet WAF scripting (vendored) ────────────────────────────────────────────
+if(WITH_JANET)
+    set(JANET_VENDOR "${CMAKE_SOURCE_DIR}/vendor/janet")
+    if(EXISTS "${JANET_VENDOR}/janet.c")
+        add_library(janet_vendor STATIC "${JANET_VENDOR}/janet.c")
+        target_include_directories(janet_vendor PUBLIC "${JANET_VENDOR}")
+        target_compile_options(janet_vendor PRIVATE
+            -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable
+            -Wno-implicit-fallthrough -Wno-missing-field-initializers
+            -Wno-deprecated-declarations -Wno-cast-function-type)
+        list(APPEND INCS "${JANET_VENDOR}")
+        list(APPEND DEFS HAVE_JANET=1)
+        set(JANET_LINK_LIB janet_vendor)
+        message(STATUS "Janet: vendored source -> WAF scripting ENABLED")
+    else()
+        list(APPEND INCS "${JANET_VENDOR}")
+        message(STATUS "Janet: stub (run vendor/janet/fetch_janet.sh to enable)")
+    endif()
+else()
+    list(APPEND INCS "${CMAKE_SOURCE_DIR}/vendor/janet")
+    message(STATUS "Janet: stub (WITH_JANET=OFF)")
+endif()
+
+# ── cssmin + optimization module (always included, header-only) ───────────────
+list(APPEND INCS "${CMAKE_SOURCE_DIR}/vendor/cssmin")
+
 # Binary
 add_executable(nas-web src/core/server.cc)
 target_include_directories(nas-web PRIVATE ${INCS})
 target_compile_definitions(nas-web PRIVATE ${DEFS} NAS_WEB_VERSION="${PROJECT_VERSION}")
+set(ALL_VENDOR_LIBS "")
 if(DEFINED QJS_LINK_LIB)
-    target_link_libraries(nas-web PRIVATE ${QJS_LINK_LIB} ${DEPS})
+    list(APPEND ALL_VENDOR_LIBS ${QJS_LINK_LIB})
+endif()
+if(DEFINED ZSTD_LINK_LIB)
+    list(APPEND ALL_VENDOR_LIBS ${ZSTD_LINK_LIB})
+endif()
+if(DEFINED JANET_LINK_LIB)
+    list(APPEND ALL_VENDOR_LIBS ${JANET_LINK_LIB})
+endif()
+if(ALL_VENDOR_LIBS)
+    target_link_libraries(nas-web PRIVATE ${ALL_VENDOR_LIBS} ${DEPS})
 else()
     target_link_libraries(nas-web PRIVATE ${DEPS})
 endif()
@@ -182,6 +264,9 @@ message(STATUS "  JS/QuickJS: ${WITH_QUICKJS}")
 message(STATUS "  Lua:    ${WITH_LUA}")
 message(STATUS "  HTTP/2:  ${WITH_NGHTTP2}")
 message(STATUS "  Brotli:  ${WITH_BROTLI}")
+message(STATUS "  zstd:    ${WITH_ZSTD}")
+message(STATUS "  Janet:   ${WITH_JANET}")
 message(STATUS "  HTTP/3: ${WITH_QUICHE}")
 message(STATUS "  ACME:   ${WITH_ACME}")
+message(STATUS "  Optimizer: ON (CSS minify, HTML rewrite, WebP)")
 message(STATUS "=========================")

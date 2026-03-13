@@ -27,17 +27,33 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 
 # ── Flagi CMake ───────────────────────────────────────────────────────────────
 WITH_MODSEC="OFF"
+WITH_ZSTD="OFF"
+WITH_JANET="OFF"
 NO_REBUILD=0
 for arg in "$@"; do
     case "$arg" in
         --with-modsec) WITH_MODSEC="ON" ;;
+        --with-zstd)   WITH_ZSTD="ON"   ;;
+        --with-janet)  WITH_JANET="ON"  ;;
         --no-rebuild)  NO_REBUILD=1 ;;
     esac
 done
 
+# ── Sprawdź i zainstaluj zależności budowania ─────────────────────────────────
+MISSING_DEPS=""
+for pkg in liblua5.4-dev libuv1-dev libssl-dev libbrotli-dev libnghttp2-dev cmake build-essential pkg-config; do
+    dpkg -s "$pkg" &>/dev/null || MISSING_DEPS="$MISSING_DEPS $pkg"
+done
+if [[ -n "$MISSING_DEPS" ]]; then
+    echo ">>> Instaluję brakujące zależności budowania:${MISSING_DEPS}"
+    apt-get install -y ${MISSING_DEPS}
+fi
+
 printf "╔══════════════════════════════════════════╗\n"
 printf "║   nas-web %-31s║\n" "${UPSTREAM_VER} — build .deb"
 printf "║   ModSecurity: %-26s║\n" "${WITH_MODSEC}"
+printf "║   zstd:        %-26s║\n" "${WITH_ZSTD}"
+printf "║   Janet WAF:   %-26s║\n" "${WITH_JANET}"
 printf "╚══════════════════════════════════════════╝\n\n"
 
 # ── 1. Build binary ───────────────────────────────────────────────────────────
@@ -53,6 +69,8 @@ if [[ "${NO_REBUILD}" -eq 0 ]]; then
         -DWITH_NGHTTP2=ON            \
         -DWITH_BROTLI=ON             \
         -DWITH_ACME=ON               \
+        -DWITH_ZSTD="${WITH_ZSTD}"   \
+        -DWITH_JANET="${WITH_JANET}" \
         -DWITH_MODSEC="${WITH_MODSEC}"\
         -DWITH_QUICHE=OFF
 
@@ -160,10 +178,15 @@ echo ""
 echo "  Package  : ${SCRIPT_DIR}/${PKG}.deb  (${SIZE})"
 echo "  Version  : ${PKG_VERSION} (from debian/changelog)"
 echo "  ModSec   : ${WITH_MODSEC}"
+echo "  zstd     : ${WITH_ZSTD}"
+echo "  Janet    : ${WITH_JANET}"
 echo ""
 echo "  Install  : sudo dpkg -i ${PKG}.deb"
 echo "  Start    : sudo systemctl enable --now nas-web"
 echo "  Admin    : http://localhost/np_admin"
 echo ""
-echo "  Tip: bash build-deb.sh --with-modsec   # build z ModSecurity"
+echo "  Opcje:"
+echo "    --with-modsec    ModSecurity WAF"
+echo "    --with-zstd      zstd kompresja (wymaga: vendor/zstd/fetch_zstd.sh)"
+echo "    --with-janet     Janet WAF scripting (wymaga: vendor/janet/fetch_janet.sh)"
 echo ""

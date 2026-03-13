@@ -1,3 +1,59 @@
+nas-web (2.2.83-1) stable; urgency=low
+
+  * Nowe moduły vendor:
+    - zstd (facebook/zstd): kompresja zstd obok gzip/brotli — priorytet
+      zstd > br > gz gdy klient obsługuje. Pre-compressed .zst pliki.
+      Aktywacja: vendor/zstd/fetch_zstd.sh + build-deb.sh --with-zstd
+    - Janet WAF scripting: Lisp-like język dla reguł WAF.
+      Reguły w plikach .janet, hot-eval przez /np_scripts.
+      Aktywacja: vendor/janet/fetch_janet.sh + build-deb.sh --with-janet
+    - cssmin (built-in): minifikacja CSS — usuwanie komentarzy, spacji,
+      redundantnych średników. Automatyczna dla text/css bez fetch.
+    - Page Optimizer (built-in): HTML rewrite — lazy-load img, charset meta,
+      strip komentarzy HTML. Automatyczny dla text/html.
+  * build-deb.sh: nowe flagi --with-zstd, --with-janet
+  * CMakeLists: WITH_ZSTD, WITH_JANET opcje (stub gdy OFF, realny gdy ON)
+  * Panel Admin: nowe karty modułów — zstd, Janet WAF, Page Optimizer
+
+ -- NAS Panel Team <admin@localhost>  Fri, 13 Mar 2026 12:00:00 +0100
+
+nas-web (2.2.82-1) stable; urgency=low
+
+  * Mobile: fix przycisku hamburger menu — usunięto inline style="display:none"
+    który nadpisywał regułę @media (max-width:768px). Przycisk widoczny na mobile.
+  * Security/Blacklist: dodano paginację (25 IP/stronę) — nawigacja
+    «  ‹ Prev  Strona X/Y  Next ›  » z licznikiem łącznym IP.
+
+ -- NAS Panel Team <admin@localhost>  Thu, 12 Mar 2026 20:00:00 +0100
+
+nas-web (2.2.80-1) stable; urgency=low
+
+  * Fix: Lua engine pokazywalo 'disabled' bo build-deb.sh nie instalowal
+    liblua5.4-dev przed kompilacja — HAVE_LUA nie bylo ustawione w binarce.
+    build-deb.sh teraz auto-instaluje brakujace zaleznosci (apt-get).
+    CMakeLists.txt: dodano fallback recznego wykrywania liblua5.4 gdy
+    pkg-config zawiedzie (find_path/find_library).
+
+ -- NAS Panel Team <admin@localhost>  Wed, 11 Mar 2026 01:00:00 +0100
+
+nas-web (2.2.79-1) stable; urgency=low
+
+  * Mobile: fix przycisku hamburger menu — inline style="display:none"
+    nadpisywał regułę @media (max-width:768px), przez co przycisk był
+    zawsze ukryty. Usunięto inline style, widoczność kontroluje CSS.
+
+ -- NAS Panel Team <admin@localhost>  Wed, 11 Mar 2026 00:30:00 +0100
+
+nas-web (2.2.78-1) stable; urgency=high
+
+  * AutoBan/Blacklist — krytyczny fix: zbanowane IP były blokowane dopiero
+    po pełnym parsowaniu HTTP (po TLS handshake i odebraniu requestu).
+    Teraz blacklist jest sprawdzana natychmiast przy accept() — zaraz po
+    uzyskaniu IP klienta, przed TLS setup i przed HTTP parse.
+    Zbanowane IP nie wykonają już handshake ani nie wyślą requestu.
+
+ -- NAS Panel Team <admin@localhost>  Wed, 11 Mar 2026 00:10:00 +0100
+
 nas-web (2.2.77-1) stable; urgency=low
 
   * Powrót do oryginalnego panelu (porzucono wersję DEV).

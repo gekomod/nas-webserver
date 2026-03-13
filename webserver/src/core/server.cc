@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <fstream>
+#include <sstream>
 #include <cstring>
 #include <cstdio>
 #include <ctime>
@@ -35,6 +36,7 @@ static std::atomic<uint64_t> g_stat_cache_entries{0};
 #include "../cache/cache.cc"
 #include "../security/ratelimit.cc"
 #include "../proxy/upstream.cc"
+#include "../optimization/optimization.cc"
 #include "../static/static_handler.cc"
 #include "../config/config_parser.cc"
 #include "../scripting/middleware_pipeline.cc"
@@ -1053,14 +1055,19 @@ static void dispatch(Conn* conn) {
         bool h2_on    = ng2_c;
         bool hc_on    = cfg2.module_lb_healthcheck;
         bool acme_on  = cfg2.module_acme;
-        char buf[3072];
+        bool zstd_on  = opt::zstd_available();
+        bool janet_on = JANET_REAL != 0;
+        char buf[4096];
         snprintf(buf,sizeof(buf),
             "{\"modules\":["
             "{\"name\":\"Cache\",\"id\":\"cache\",\"enabled\":%s,\"toggleable\":true,\"icon\":\"cache\",\"version\":\"LRU\",\"note\":\"Odpowiedzi proxy i pliki statyczne w pamieci\"},"
             "{\"name\":\"Rate Limiter\",\"id\":\"ratelimit\",\"enabled\":%s,\"toggleable\":true,\"icon\":\"ratelimit\",\"version\":\"token-bucket\",\"note\":\"Token bucket per IP per lokacja\"},"
             "{\"name\":\"Gzip/Brotli\",\"id\":\"gzip\",\"enabled\":%s,\"toggleable\":true,\"icon\":\"gzip\",\"version\":\"system\",\"note\":\"Kompresja odpowiedzi statycznych i proxy\"},"
+            "{\"name\":\"zstd\",\"id\":\"zstd\",\"enabled\":%s,\"toggleable\":false,\"icon\":\"gzip\",\"version\":\"%s\",\"note\":\"%s\"},"
             "{\"name\":\"Lua 5.4\",\"id\":\"lua\",\"enabled\":%s,\"toggleable\":%s,\"icon\":\"lua\",\"version\":\"5.4\",\"note\":\"%s\"},"
             "{\"name\":\"QuickJS\",\"id\":\"js\",\"enabled\":%s,\"toggleable\":%s,\"icon\":\"js\",\"version\":\"2024\",\"note\":\"%s\"},"
+            "{\"name\":\"Janet WAF\",\"id\":\"janet\",\"enabled\":%s,\"toggleable\":false,\"icon\":\"js\",\"version\":\"%s\",\"note\":\"%s\"},"
+            "{\"name\":\"Page Optimizer\",\"id\":\"optimizer\",\"enabled\":true,\"toggleable\":false,\"icon\":\"gzip\",\"version\":\"built-in\",\"note\":\"CSS minify, HTML rewrite (lazy-img, charset), WebP detection\"},"
             "{\"name\":\"TLS/SSL\",\"id\":\"tls\",\"enabled\":%s,\"toggleable\":false,\"icon\":\"tls\",\"version\":\"OpenSSL 3\",\"note\":\"%s\"},"
             "{\"name\":\"HTTP\\/2\",\"id\":\"h2\",\"enabled\":%s,\"toggleable\":false,\"icon\":\"h2\",\"version\":\"nghttp2\",\"note\":\"%s\"},"
             "{\"name\":\"Health Check\",\"id\":\"healthcheck\",\"enabled\":%s,\"toggleable\":true,\"icon\":\"hc\",\"version\":\"built-in\",\"note\":\"Automatyczne monitorowanie upstreamow\"},"
@@ -1069,8 +1076,12 @@ static void dispatch(Conn* conn) {
             cache_on?"true":"false",
             rl_on?"true":"false",
             gzip_on?"true":"false",
+            zstd_on?"true":"false", opt::zstd_version_str(),
+            zstd_on?"aktywny — kompresja zstd dla plików statycznych":"uruchom vendor/zstd/fetch_zstd.sh i przebuduj",
             lua_on?"true":"false", lua_c?"true":"false", lua_c?"aktywny":"zainstaluj liblua5.4-dev",
             js_on?"true":"false",  qjs_c?"true":"false", qjs_c?"aktywny":"uruchom vendor/quickjs/fetch_quickjs.sh",
+            janet_on?"true":"false", opt::janet_version_str(),
+            janet_on?"aktywny — reguły WAF w języku Janet (Lisp)":"uruchom vendor/janet/fetch_janet.sh i przebuduj",
             tls_on?"true":"false",
             tls_on?"Aktywne - certyfikat zaladowany":"Brak certyfikatu - dodaj ssl_cert i ssl_key w configu serwera",
             h2_on?"true":"false", ng2_c?"aktywny":"zainstaluj libnghttp2-dev",
@@ -2275,7 +2286,16 @@ static void on_connection(uv_stream_t* server, int status) {
         g_conn_count[conn->client_ip]++;
     }
 
-    // ── Register in active connections ────────────────────────────────────────
+    // ── Early blacklist check — przed TLS, przed HTTP parse ──────────────────
+    {
+        std::lock_guard<std::mutex> lk(g_blacklist_mu);
+        if(g_blacklist.count(conn->client_ip)){
+            NW_DEBUG("blacklist","Early drop banned IP: %s", conn->client_ip.c_str());
+            uv_close((uv_handle_t*)&conn->client,[](uv_handle_t* h){
+                delete static_cast<Conn*>(h->data);});
+            return;
+        }
+    }
     {
         std::lock_guard<std::mutex> lk(g_active_mu);
         g_active[conn] = {conn->client_ip, "?", "/", 0, now_ms(), "pending"};
@@ -2384,8 +2404,98 @@ int main(int argc, char** argv) {
         "\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x9D\n",
         (int)NP_VERSION.size(), NP_VERSION.data());
 
-    const char* cfg_path = (argc > 1) ? argv[1] : nullptr;
+    // ── Parse CLI arguments ───────────────────────────────────────────────────
+    // Usage:
+    //   nas-web [config_file] [--password_change=NEWPASSWORD]
+    //
+    // --password_change=NEW  : load config, set admin_password=NEW,
+    //                          rewrite config file in-place, exit(0).
+    //                          Config file must be specified as first positional arg.
+    const char* cfg_path     = nullptr;
+    std::string new_password;   // non-empty → password_change mode
+
+    for(int i = 1; i < argc; ++i) {
+        std::string_view arg(argv[i]);
+        const std::string_view pw_prefix = "--password_change=";
+        if(arg.substr(0, pw_prefix.size()) == pw_prefix) {
+            new_password = std::string(arg.substr(pw_prefix.size()));
+        } else if(arg == "--password_change") {
+            // --password_change NEW  (space-separated)
+            if(i + 1 < argc) { new_password = argv[++i]; }
+            else { fprintf(stderr, "[ERROR] --password_change requires a value\n"); return 1; }
+        } else if(arg.substr(0,2) != "--") {
+            cfg_path = argv[i];   // positional → config file
+        } else {
+            fprintf(stderr, "[WARN ] Unknown option: %s\n", argv[i]);
+        }
+    }
+
     if(cfg_path) g_config_path = cfg_path;
+
+    // ── --password_change mode ────────────────────────────────────────────────
+    if(!new_password.empty()) {
+        if(!cfg_path) {
+            fprintf(stderr,
+                "[ERROR] --password_change requires a config file as first argument\n"
+                "        Usage: nas-web /etc/nas-web/nas-web.conf --password_change=NEWPASSWORD\n");
+            return 1;
+        }
+        if(new_password.size() < 6) {
+            fprintf(stderr, "[ERROR] New password must be at least 6 characters\n");
+            return 1;
+        }
+        // Read current config file
+        std::ifstream fin(cfg_path);
+        if(!fin) {
+            fprintf(stderr, "[ERROR] Cannot open config: %s\n", cfg_path);
+            return 1;
+        }
+        std::string content((std::istreambuf_iterator<char>(fin)),
+                             std::istreambuf_iterator<char>());
+        fin.close();
+
+        // Replace or append admin_password directive
+        // Strategy: regex-like line-by-line replacement
+        std::string out;
+        out.reserve(content.size() + 64);
+        std::istringstream ss(content);
+        std::string line;
+        bool replaced = false;
+        while(std::getline(ss, line)) {
+            // Detect "admin_password <value>;" lines (with optional whitespace)
+            std::string trimmed = line;
+            size_t s = trimmed.find_first_not_of(" \t");
+            if(s != std::string::npos) trimmed = trimmed.substr(s);
+            if(trimmed.substr(0, std::min(trimmed.size(), std::string("admin_password").size())) == "admin_password") {
+                // Preserve leading whitespace
+                std::string indent;
+                for(char c : line) { if(c==' '||c=='\t') indent+=c; else break; }
+                out += indent + "admin_password " + new_password + ";\n";
+                replaced = true;
+            } else {
+                out += line + "\n";
+            }
+        }
+        // If directive not found, append to file
+        if(!replaced) {
+            out += "admin_password " + new_password + ";\n";
+            fprintf(stderr, "[INFO ] admin_password directive not found — appended to config\n");
+        }
+
+        // Write back
+        std::ofstream fout(cfg_path, std::ios::trunc);
+        if(!fout) {
+            fprintf(stderr, "[ERROR] Cannot write config: %s\n", cfg_path);
+            return 1;
+        }
+        fout << out;
+        fout.close();
+
+        fprintf(stderr, "[OK   ] Password changed successfully in %s\n", cfg_path);
+        fprintf(stderr, "[INFO ] Restart nas-web for change to take effect, or send SIGHUP to reload\n");
+        return 0;
+    }
+    // ── Normal startup — load config ──────────────────────────────────────────
     try {
         if(cfg_path) {
             NW_INFO("config", "Loading config: %s", cfg_path);

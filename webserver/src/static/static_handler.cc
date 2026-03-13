@@ -122,20 +122,25 @@ Response serve_static(const Request& req, const StaticConfig& cfg){
             }
         }
 
-        // Check for pre-compressed .gz / .br
+        // Check for pre-compressed .gz / .br / .zst
         auto accept_enc = req.headers.get("Accept-Encoding");
-        bool client_gz = accept_enc.find("gzip")   != std::string_view::npos;
-        bool client_br = accept_enc.find("br")     != std::string_view::npos;
-        bool use_gz=false, use_br=false;
+        bool client_gz   = accept_enc.find("gzip") != std::string_view::npos;
+        bool client_br   = accept_enc.find("br")   != std::string_view::npos;
+        bool client_zstd = opt::client_accepts_zstd(accept_enc);
+        bool use_gz=false, use_br=false, use_zstd=false;
         std::string read_path=path;
-        struct stat gz_st, br_st;
+        struct stat gz_st, br_st, zst_st;
 
-        // Prefer brotli over gzip
-        if(cfg.brotli && client_br && (size_t)fst.st_size >= cfg.gzip_min_size) {
+        // Prefer zstd > brotli > gzip (pre-compressed files)
+        if(opt::zstd_available() && client_zstd && (size_t)fst.st_size >= cfg.gzip_min_size) {
+            std::string zst = path+".zst";
+            if(stat(zst.c_str(),&zst_st)==0){ read_path=zst; use_zstd=true; }
+        }
+        if(!use_zstd && cfg.brotli && client_br && (size_t)fst.st_size >= cfg.gzip_min_size) {
             std::string br = path+".br";
             if(stat(br.c_str(),&br_st)==0){ read_path=br; use_br=true; }
         }
-        if(!use_br && cfg.gzip && client_gz && (size_t)fst.st_size >= cfg.gzip_min_size){
+        if(!use_zstd && !use_br && cfg.gzip && client_gz && (size_t)fst.st_size >= cfg.gzip_min_size){
             std::string gz=path+".gz";
             if(stat(gz.c_str(),&gz_st)==0){read_path=gz;use_gz=true;}
         }
@@ -148,16 +153,34 @@ Response serve_static(const Request& req, const StaticConfig& cfg){
         if(n<0) return Response::make_error(500);
         data.resize((size_t)n);
 
-        // Runtime compression: try brotli first, then gzip
-        bool rt_gz=false, rt_br=false;
-        if(!use_br && !use_gz && data.size() >= cfg.gzip_min_size) {
-            if(cfg.brotli && client_br) {
+        // CSS minification (before compression)
+        std::string content_type_str(mime_type(path));
+        if(opt::is_css(content_type_str) && !use_gz && !use_br && !use_zstd) {
+            auto minified = opt::minify_css(data);
+            if(opt::should_minify_css(data, minified)) data = std::move(minified);
+        }
+        // HTML optimization (lazy images, charset, strip comments)
+        if(opt::is_html(content_type_str) && !use_gz && !use_br && !use_zstd) {
+            data = opt::optimize_html(data);
+        }
+
+        // Runtime compression: zstd > brotli > gzip
+        bool rt_gz=false, rt_br=false, rt_zstd=false;
+        if(!use_br && !use_gz && !use_zstd && data.size() >= cfg.gzip_min_size
+           && opt::is_compressible(content_type_str)) {
+            if(opt::zstd_available() && client_zstd) {
+                auto compressed = opt::zstd_compress(data);
+                if(!compressed.empty() && compressed.size() < data.size()) {
+                    data = std::move(compressed); rt_zstd = true;
+                }
+            }
+            if(!rt_zstd && cfg.brotli && client_br) {
                 auto compressed = brotli_compress(data);
                 if(!compressed.empty() && compressed.size() < data.size()) {
                     data = std::move(compressed); rt_br = true;
                 }
             }
-            if(!rt_br && cfg.gzip && client_gz) {
+            if(!rt_zstd && !rt_br && cfg.gzip && client_gz) {
                 auto compressed = gzip_compress(data);
                 if(!compressed.empty() && compressed.size() < data.size()) {
                     data = std::move(compressed); rt_gz = true;
@@ -166,11 +189,12 @@ Response serve_static(const Request& req, const StaticConfig& cfg){
         }
 
         Response resp; resp.status=200;
-        resp.headers.set("Content-Type",std::string(mime_type(path)));
+        resp.headers.set("Content-Type",content_type_str);
         if(cfg.etag) resp.headers.set("ETag",etag);
-        if(use_br  || rt_br) resp.headers.set("Content-Encoding","br");
+        if(use_zstd || rt_zstd) resp.headers.set("Content-Encoding","zstd");
+        else if(use_br  || rt_br) resp.headers.set("Content-Encoding","br");
         else if(use_gz || rt_gz) resp.headers.set("Content-Encoding","gzip");
-        if(cfg.gzip || cfg.brotli) resp.headers.set("Vary","Accept-Encoding");
+        if(cfg.gzip || cfg.brotli || opt::zstd_available()) resp.headers.set("Vary","Accept-Encoding");
         char lm[64]; strftime(lm,sizeof(lm),"%a, %d %b %Y %H:%M:%S GMT",gmtime(&fst.st_mtime));
         resp.headers.set("Last-Modified",lm);
         if(cfg.cache_max_age>0){

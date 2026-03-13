@@ -406,9 +406,9 @@ body.nav-open #nav-overlay { display: block; }
   <div class="logo">
     <div class="logo-mark"><svg viewBox="0 0 16 16"><path d="M2 2h5v2H4v8h8v-3h2v5H2V2z"/><path d="M8 2h6v6h-2V5.4L7.4 10 6 8.6 10.6 4H8V2z"/></svg></div>
     <div class="logo-name">nas<span>-web</span></div>
-    <div class="logo-ver" id="hdr-version">v2.2.75</div>
+    <div class="logo-ver" id="hdr-version">v2.2.83</div>
   </div>
-  <button id="nav-toggle" onclick="toggleNav()" style="display:none" aria-label="Menu">
+  <button id="nav-toggle" onclick="toggleNav()" aria-label="Menu">
     <span></span><span></span><span></span>
   </button>
   <div class="header-right">
@@ -1401,6 +1401,10 @@ response.body = table.concat(stats,"
       <button class="btn btn-primary" onclick="loadWaf()">↻ Odśwież</button>
     </div>
   </div>
+  <div style="background:rgba(255,136,0,.08);border-bottom:1px solid rgba(255,136,0,.2);padding:10px 20px;font-size:11px;color:var(--warn);display:flex;align-items:center;gap:8px">
+    <span>⚠️</span>
+    <span>Ta zakładka pokazuje zdarzenia <b>ModSecurity</b>. Ataki blokowane przez wbudowany <b>WAF Regex</b> (SQLi, XSS, CmdInjection itp.) widoczne są w zakładce <a href="#" onclick="show('waf-regex',null);return false" style="color:var(--accent);text-decoration:underline">🔍 WAF Regex</a>.</span>
+  </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:16px" class="stat-grid">
     <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px;text-align:center">
       <div style="font-size:22px;font-weight:700;color:var(--warn)" id="waf-blocked">0</div>
@@ -1936,6 +1940,18 @@ function show(id,el){
     loadWaf();
   } else if(id === 'waf-regex'){
     loadWafRegex();
+    if(window._wafrTimer){ clearInterval(window._wafrTimer); window._wafrTimer=null; }
+    window._wafrTimer = setInterval(()=>{
+      const active = document.getElementById('sec-waf-regex');
+      if(active && active.classList.contains('active')) loadWafRegex();
+    }, 4000);
+  } else if(id === 'waf'){
+    loadWaf();
+    if(window._wafTimer){ clearInterval(window._wafTimer); window._wafTimer=null; }
+    window._wafTimer = setInterval(()=>{
+      const active = document.getElementById('sec-waf');
+      if(active && active.classList.contains('active')) loadWaf();
+    }, 4000);
   } else {
     stopSSELog();
   }
@@ -2294,7 +2310,19 @@ async function renderModules(){
            ${on ? '&#10005; Wyłącz' : '&#10003; Włącz'}
          </button>`;
     } else {
-      btn = `<span style="font-size:9px;color:var(--dim);display:block;margin-top:auto">wymaga config</span>`;
+      const buildInfo = {
+        'zstd':      on ? '\u2713 Aktywny — kompresja zstd dla plików statycznych'
+                        : '\u2699 W\u0142\u0105cz: build-deb.sh --with-zstd',
+        'janet':     on ? '\u2713 Regu\u0142y WAF z plików .janet w /etc/nas-web/scripts/'
+                        : '\u2699 W\u0142\u0105cz: build-deb.sh --with-janet',
+        'optimizer': '\u2713 Automatyczny — CSS minify, HTML lazy-img, charset',
+        'tls':       on ? '\u2713 Certyfikat za\u0142adowany — konfiguracja w nas-web.conf'
+                        : '\u2699 Dodaj ssl_cert i ssl_key w nas-web.conf',
+        'h2':        on ? '\u2713 HTTP/2 aktywny — brak dodatkowej konfiguracji'
+                        : '\u2699 apt install libnghttp2-dev, nast\u0119pnie przebuduj',
+      };
+      const info = buildInfo[m.id] || (on ? '\u2713 Aktywny' : '\u2699 Wymaga przebudowania');
+      btn = `<span style="font-size:9px;color:var(--dim);display:block;margin-top:auto;line-height:1.6">${info}</span>`;
     }
     return `<div style="background:var(--bg3);border:1px solid ${border};border-radius:8px;
                 padding:14px;display:flex;flex-direction:column;gap:6px;
@@ -2764,22 +2792,48 @@ async function generateSSL(){
   }
 }
 
+let _blIps=[], _blPage=0;
+const BL_PER_PAGE=25;
+
 async function loadBlacklist(){
   const d = await api('/np_blacklist');
   if(!d) return;
+  _blIps = d.ips||[];
+  _blPage = 0;
   const cnt = document.getElementById('blacklist-count');
+  if(cnt) cnt.textContent = _blIps.length+' IPs';
+  renderBlacklistPage();
+}
+
+function renderBlacklistPage(){
   const tbl = document.getElementById('blacklist-table');
-  if(cnt) cnt.textContent = (d.count||0)+' IPs';
   if(!tbl) return;
-  if(!d.ips||d.ips.length===0){
+  if(_blIps.length===0){
     tbl.innerHTML='<div style="padding:8px 0;color:var(--dim);font-size:12px">No blocked IPs</div>'; return;
   }
+  const totalPages = Math.ceil(_blIps.length/BL_PER_PAGE);
+  const page = _blIps.slice(_blPage*BL_PER_PAGE, (_blPage+1)*BL_PER_PAGE);
+  const rows = page.map(ip=>`<tr>
+    <td style="font-family:JetBrains Mono,monospace;font-size:12px">${ip}</td>
+    <td><button class="btn" onclick="blacklistRemove('${ip}')" style="font-size:10px;padding:3px 8px;color:var(--red)">Unblock</button></td>
+  </tr>`).join('');
+  const pagination = totalPages>1 ? `
+    <div style="display:flex;align-items:center;gap:6px;padding:10px 0 4px;flex-wrap:wrap">
+      <button class="btn" onclick="blGo(0)" ${_blPage===0?'disabled':''} style="font-size:11px;padding:3px 8px">&laquo;</button>
+      <button class="btn" onclick="blGo(${_blPage-1})" ${_blPage===0?'disabled':''} style="font-size:11px;padding:3px 8px">&lsaquo; Prev</button>
+      <span style="font-size:11px;color:var(--dim);padding:0 4px">Strona ${_blPage+1} / ${totalPages} &nbsp;(${_blIps.length} IP)</span>
+      <button class="btn" onclick="blGo(${_blPage+1})" ${_blPage>=totalPages-1?'disabled':''} style="font-size:11px;padding:3px 8px">Next &rsaquo;</button>
+      <button class="btn" onclick="blGo(${totalPages-1})" ${_blPage>=totalPages-1?'disabled':''} style="font-size:11px;padding:3px 8px">&raquo;</button>
+    </div>` : '';
   tbl.innerHTML=`<table class="conn-table" style="width:100%">
     <thead><tr><th>IP Address</th><th style="width:80px">Action</th></tr></thead>
-    <tbody>${d.ips.map(ip=>`<tr>
-      <td style="font-family:JetBrains Mono,monospace;font-size:12px">${ip}</td>
-      <td><button class="btn" onclick="blacklistRemove('${ip}')" style="font-size:10px;padding:3px 8px;color:var(--red)">Unblock</button></td>
-    </tr>`).join('')}</tbody></table>`;
+    <tbody>${rows}</tbody></table>${pagination}`;
+}
+
+function blGo(p){
+  const totalPages=Math.ceil(_blIps.length/BL_PER_PAGE);
+  _blPage=Math.max(0,Math.min(p,totalPages-1));
+  renderBlacklistPage();
 }
 async function blacklistAdd(){
   const ip = document.getElementById('blacklist-ip').value.trim();
