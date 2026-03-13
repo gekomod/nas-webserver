@@ -1,0 +1,27 @@
+name: "nas-web CodeQL config"
+
+paths:
+  - src
+  - include
+  - tests
+
+paths-ignore:
+  - vendor
+  - build
+  - debian
+  - '**/*.test.cc'
+  - '**/*_test.cc'
+  - '**/test_*.cc'
+
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  - exclude:
+      id: cpp/path-injection
+  - exclude:
+      id: cpp/weak-cryptographic-algorithm
+  - exclude:
+      id: cpp/unsafe-format-string
+  - exclude:
+      id: cpp/use-of-goto
