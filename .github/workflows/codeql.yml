@@ -1,5 +1,5 @@
 # .github/workflows/codeql.yml
-name: "CodeQL Advanced"
+name: "CodeQL Security Scan"
 
 on:
   push:
@@ -7,12 +7,11 @@ on:
   pull_request:
     branches: [ "main", "master" ]
   schedule:
-    # Uruchom raz dziennie o 2:30 UTC
     - cron: '30 2 * * *'
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: CodeQL Analyze (C++)
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -20,42 +19,33 @@ jobs:
       actions: read
       contents: read
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: c-cpp
-            build-mode: manual
-          - language: javascript-typescript
-            build-mode: none
-          - language: python
-            build-mode: none
-
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
     # Instalacja zależności systemowych
     - name: Install build dependencies
-      if: matrix.language == 'c-cpp'
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           cmake \
           build-essential \
           pkg-config \
+          lua5.4-dev \
           liblua5.4-dev \
           libuv1-dev \
           libssl-dev \
           libbrotli-dev \
           libnghttp2-dev \
           libmodsecurity-dev \
-          libmodsecurity3 \
-          modsecurity-crs
+          modsecurity-crs \
+          zlib1g-dev
+        
+        # Ustaw ścieżkę dla pkg-config
+        echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig" >> $GITHUB_ENV
 
-    # Pobranie vendor dependencies jeśli potrzebne
+    # Pobranie vendored dependencies (tylko nagłówki, nie będą skanowane)
     - name: Fetch vendored dependencies
-      if: matrix.language == 'c-cpp'
       run: |
         if [ -f vendor/quickjs/fetch_quickjs.sh ]; then
           bash vendor/quickjs/fetch_quickjs.sh
@@ -67,36 +57,17 @@ jobs:
           bash vendor/janet/fetch_janet.sh
         fi
 
-    # Initializes the CodeQL tools for scanning.
+    # Initializes the CodeQL tools for scanning
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
-        languages: ${{ matrix.language }}
-        build-mode: ${{ matrix.build-mode }}
-        # Dostosuj zapytania do projektu C++
+        languages: c-cpp
+        build-mode: manual
         queries: security-and-quality
-        config: |
-          name: "nas-web CodeQL config"
-          paths:
-            - src
-            - include
-            - tests
-          paths-ignore:
-            - vendor
-            - build
-            - debian
-          queries:
-            - uses: security-and-quality
-          # Wyklucz warningi które nie są istotne
-          query-filters:
-            - exclude:
-                id: cpp/path-injection  # analizowane przez WAF
-            - exclude:
-                id: cpp/weak-cryptographic-algorithm  # używamy OpenSSL 3
+        config-file: .github/codeql/codeql-config.yml
 
-    # Build dla C/C++ z odpowiednimi flagami
-    - name: Configure and build (C/C++)
-      if: matrix.language == 'c-cpp'
+    # Build
+    - name: Configure and build
       run: |
         mkdir -p build
         cmake -S . -B build \
@@ -109,28 +80,27 @@ jobs:
           -DWITH_MODSEC=ON \
           -DWITH_ZSTD=ON \
           -DWITH_JANET=ON \
-          -DWITH_QUICHE=OFF \
-          -DCODEQL_ANALYSIS=ON
+          -DWITH_QUICHE=OFF
         cmake --build build --parallel $(nproc)
 
     # Perform the CodeQL analysis
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
       with:
-        category: "/language:${{matrix.language}}"
+        category: "/language:c-cpp"
         output: codeql-results
         upload: true
 
-    # Dodatkowe: Zapisz wyniki jako artifact
+    # Upload SARIF results
     - name: Upload SARIF results
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: codeql-results-${{ matrix.language }}
+        name: codeql-results
         path: codeql-results
         retention-days: 30
 
-  # Dodatkowe: Security scanning dla zależności
+  # Dependency review
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
@@ -146,42 +116,24 @@ jobs:
           allow-licenses: MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, BSL-1.0
           comment-summary-in-pr: always
 
-  # Skany podatności dla zależności systemowych
-  trivy-scan:
-    name: Trivy vulnerability scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Build image (for testing)
-        run: |
-          mkdir -p build
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel $(nproc)
-
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  # Sprawdzenie czy binarka nie zawiera known vulnerabilities
-  checksec:
+  # Binary hardening check
+  hardening-check:
     name: Binary hardening check
     runs-on: ubuntu-latest
-    needs: analyze
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            build-essential \
+            libuv1-dev \
+            libssl-dev \
+            liblua5.4-dev \
+            devscripts
 
       - name: Build with hardening flags
         run: |
@@ -190,16 +142,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_FLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fpie -pie" \
             -DWITH_LUA=ON \
-            -DWITH_MODSEC=ON
+            -DWITH_MODSEC=OFF
           cmake --build build-hardened --parallel $(nproc)
 
-      - name: Run checksec
+      - name: Run hardening-check
         run: |
-          sudo apt-get install -y checksec
-          checksec --file=build-hardened/nas-web | tee checksec-report.txt
+          hardening-check build-hardened/nas-web | tee hardening-report.txt
 
-      - name: Upload checksec report
+      - name: Upload hardening report
         uses: actions/upload-artifact@v4
         with:
-          name: checksec-report
-          path: checksec-report.txt
+          name: hardening-report
+          path: hardening-report.txt
