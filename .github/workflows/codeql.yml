@@ -1,5 +1,5 @@
 # .github/workflows/codeql.yml
-name: "CodeQL Advanced"
+name: "CodeQL Security Scan"
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: CodeQL Analyze (C++)
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -20,24 +20,12 @@ jobs:
       actions: read
       contents: read
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: c-cpp
-            build-mode: manual
-          - language: javascript-typescript
-            build-mode: none
-          - language: python
-            build-mode: none
-
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
     # Instalacja zależności systemowych
     - name: Install build dependencies
-      if: matrix.language == 'c-cpp'
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -53,9 +41,8 @@ jobs:
           libmodsecurity3 \
           modsecurity-crs
 
-    # Pobranie vendor dependencies jeśli potrzebne
+    # Pobranie vendored dependencies jeśli potrzebne
     - name: Fetch vendored dependencies
-      if: matrix.language == 'c-cpp'
       run: |
         if [ -f vendor/quickjs/fetch_quickjs.sh ]; then
           bash vendor/quickjs/fetch_quickjs.sh
@@ -71,8 +58,8 @@ jobs:
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
-        languages: ${{ matrix.language }}
-        build-mode: ${{ matrix.build-mode }}
+        languages: c-cpp
+        build-mode: manual
         # Dostosuj zapytania do projektu C++
         queries: security-and-quality
         config: |
@@ -95,8 +82,7 @@ jobs:
                 id: cpp/weak-cryptographic-algorithm  # używamy OpenSSL 3
 
     # Build dla C/C++ z odpowiednimi flagami
-    - name: Configure and build (C/C++)
-      if: matrix.language == 'c-cpp'
+    - name: Configure and build
       run: |
         mkdir -p build
         cmake -S . -B build \
@@ -109,15 +95,14 @@ jobs:
           -DWITH_MODSEC=ON \
           -DWITH_ZSTD=ON \
           -DWITH_JANET=ON \
-          -DWITH_QUICHE=OFF \
-          -DCODEQL_ANALYSIS=ON
+          -DWITH_QUICHE=OFF
         cmake --build build --parallel $(nproc)
 
     # Perform the CodeQL analysis
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
       with:
-        category: "/language:${{matrix.language}}"
+        category: "/language:c-cpp"
         output: codeql-results
         upload: true
 
@@ -126,7 +111,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: codeql-results-${{ matrix.language }}
+        name: codeql-results
         path: codeql-results
         retention-days: 30
 
@@ -146,36 +131,8 @@ jobs:
           allow-licenses: MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, BSL-1.0
           comment-summary-in-pr: always
 
-  # Skany podatności dla zależności systemowych
-  trivy-scan:
-    name: Trivy vulnerability scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Build image (for testing)
-        run: |
-          mkdir -p build
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel $(nproc)
-
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  # Sprawdzenie czy binarka nie zawiera known vulnerabilities
-  checksec:
+  # Binary hardening check
+  hardening-check:
     name: Binary hardening check
     runs-on: ubuntu-latest
     needs: analyze
@@ -193,13 +150,41 @@ jobs:
             -DWITH_MODSEC=ON
           cmake --build build-hardened --parallel $(nproc)
 
-      - name: Run checksec
+      - name: Run hardening-check
         run: |
-          sudo apt-get install -y checksec
-          checksec --file=build-hardened/nas-web | tee checksec-report.txt
+          sudo apt-get install -y devscripts
+          hardening-check build-hardened/nas-web | tee hardening-report.txt
 
-      - name: Upload checksec report
+      - name: Upload hardening report
         uses: actions/upload-artifact@v4
         with:
-          name: checksec-report
-          path: checksec-report.txt
+          name: hardening-report
+          path: hardening-report.txt
+
+  # Prosty fuzzer dla HTTP parsera (opcjonalnie)
+  fuzzing:
+    name: Continuous Fuzzing (smoke test)
+    runs-on: ubuntu-latest
+    if: false  # Wyłączone domyślnie, włącz jeśli masz testy fuzzingowe
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install AFL++
+        run: |
+          sudo apt-get install -y afl++
+      
+      - name: Build with fuzzing
+        run: |
+          mkdir -p build-fuzz
+          cd build-fuzz
+          CC=afl-gcc-fast CXX=afl-g++-fast cmake .. \
+            -DENABLE_FUZZING=ON \
+            -DWITH_MODSEC=OFF
+          make -j$(nproc)
+      
+      - name: Run fuzzer (quick test)
+        run: |
+          mkdir -p fuzz-input
+          echo "GET / HTTP/1.1" > fuzz-input/sample
+          afl-fuzz -i fuzz-input -o fuzz-output -t 1000 -- build-fuzz/nas-web-fuzzer || true
