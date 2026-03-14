@@ -2,7 +2,7 @@
 
 > High-performance C++20 reverse proxy and static file server for NAS/homelab environments.
 
-[![Build](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml)
+[![Build .deb package](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml)
 [![CodeQL](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml)
 ![Version](https://img.shields.io/badge/version-2.2.84-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)

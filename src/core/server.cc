@@ -300,6 +300,8 @@ struct Worker {
 // ── Connection ────────────────────────────────────────────────────────────────
 struct Conn {
     uv_tcp_t    client{};
+    uv_timer_t  idle_timer{};      // fires when connection is idle too long
+    bool        idle_timer_active{false};
     Worker*     worker{nullptr};
 
     // ── TLS (memory BIO bridge) ──────────────────────────────────────────────
@@ -487,6 +489,13 @@ static void tls_write_plaintext(Conn* conn, const char* data, size_t len) {
 
 // ── close_conn ────────────────────────────────────────────────────────────────
 static void close_conn(Conn* conn) {
+    // Stop idle timer before closing
+    if(conn->idle_timer_active) {
+        uv_timer_stop(&conn->idle_timer);
+        if(!uv_is_closing((uv_handle_t*)&conn->idle_timer))
+            uv_close((uv_handle_t*)&conn->idle_timer, nullptr);
+        conn->idle_timer_active = false;
+    }
     // Remove from SSE clients if registered
     if(conn->is_sse) {
         std::lock_guard lk(g_sse_mu);
@@ -520,6 +529,33 @@ static void close_conn(Conn* conn) {
     });
 }
 
+// ── Idle timeout helpers ──────────────────────────────────────────────────────
+// Start (or restart) idle timer — connection closed if no activity within ms
+static void conn_idle_start(Conn* conn, uint64_t ms) {
+    if(!conn->idle_timer_active) {
+        uv_timer_init(conn->worker ? conn->worker->loop : uv_default_loop(),
+                      &conn->idle_timer);
+        conn->idle_timer.data = conn;
+        conn->idle_timer_active = true;
+    }
+    uv_timer_start(&conn->idle_timer, [](uv_timer_t* t){
+        Conn* c = static_cast<Conn*>(t->data);
+        NW_DEBUG("conn", "Idle timeout — closing %s", c->client_ip.c_str());
+        close_conn(c);
+    }, ms, 0);
+}
+
+// Reset idle timer (called on each request/activity)
+static void conn_idle_reset(Conn* conn, uint64_t ms) {
+    if(conn->idle_timer_active)
+        uv_timer_start(&conn->idle_timer, [](uv_timer_t* t){
+            Conn* c = static_cast<Conn*>(t->data);
+            NW_DEBUG("conn", "Idle timeout — closing %s", c->client_ip.c_str());
+            close_conn(c);
+        }, ms, 0);
+}
+
+
 // ── write_response ────────────────────────────────────────────────────────────
 static void on_write_done(uv_write_t* req, int status) {
     Conn* conn = static_cast<Conn*>(req->data);
@@ -532,6 +568,13 @@ static void on_write_done(uv_write_t* req, int status) {
     conn->response_data.clear();
     conn->upstream_conn = nullptr;
     conn->upstream_pool = nullptr;
+    // Restart idle timer — connection waiting for next keepalive request
+    {
+        uint64_t idle_ms = 65000;
+        if(conn->worker && conn->worker->config && !conn->worker->config->servers.empty())
+            idle_ms = (uint64_t)conn->worker->config->servers[0].keepalive_timeout * 1000;
+        conn_idle_reset(conn, idle_ms);
+    }
     uv_read_start((uv_stream_t*)&conn->client,
         [](uv_handle_t* h, size_t, uv_buf_t* buf){
             auto* c = static_cast<Conn*>(h->data);
@@ -1165,22 +1208,26 @@ static void dispatch(Conn* conn) {
                 json += buf; first = false;
             }
         }
-        // Add recent completed requests (newest first, up to 100)
+        // Add recent completed requests (newest first, up to 100, max 5 min old)
         {
+            static constexpr int64_t MAX_RECENT_AGE_MS = 300000; // 5 minut
             std::lock_guard<std::mutex> rl(g_recent_mu);
             int shown = 0;
-            for(auto it = g_recent_reqs.rbegin(); it != g_recent_reqs.rend() && shown < 100; ++it, ++shown) {
+            for(auto it = g_recent_reqs.rbegin(); it != g_recent_reqs.rend() && shown < 100; ++it) {
+                int64_t age = now - it->ts_ms;
+                if(age > MAX_RECENT_AGE_MS) continue; // pomiń stare wpisy
                 if(!first) json += ",";
                 char buf[512];
-                // escape path
                 std::string epath;
                 for(char c : it->path) { if(c=='"') epath+="\\\""; else epath+=c; }
                 snprintf(buf,sizeof(buf),
                     "{\"ip\":\"%s\",\"method\":\"%s\",\"path\":\"%s\","
-                    "\"age_ms\":%lld,\"type\":\"%s\",\"status\":%d,\"active\":false}",
+                    "\"age_ms\":%lld,\"type\":\"%s\",\"status\":%d,\"active\":false,\"duration_ms\":%lld}",
                     it->ip.c_str(), it->method.c_str(), epath.c_str(),
-                    (long long)(now - it->ts_ms), it->type.c_str(), it->status);
+                    (long long)age, it->type.c_str(), it->status,
+                    (long long)it->duration_ms);
                 json += buf; first = false;
+                ++shown;
             }
         }
         json += "],\"total\":" + std::to_string(active_count) + "}";
@@ -2299,6 +2346,13 @@ static void on_connection(uv_stream_t* server, int status) {
     {
         std::lock_guard<std::mutex> lk(g_active_mu);
         g_active[conn] = {conn->client_ip, "?", "/", 0, now_ms(), "pending"};
+    }
+    // Start idle timeout — close connection if no request arrives within keepalive_timeout
+    {
+        uint64_t idle_ms = 65000; // default 65s
+        if(w->config && !w->config->servers.empty())
+            idle_ms = (uint64_t)w->config->servers[0].keepalive_timeout * 1000;
+        conn_idle_start(conn, idle_ms);
     }
 
     // ── TLS setup (memory BIO bridge) ────────────────────────────────────────

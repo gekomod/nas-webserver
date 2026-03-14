@@ -2690,27 +2690,47 @@ function stopConnRefresh(){ clearInterval(_connRefreshTimer); _connRefreshTimer=
 async function renderConns(){
   const d = await api('/np_connections');
   const tbody = document.getElementById('conn-table'); if(!tbody) return;
-  const conns = d?.connections || [];
+  const allConns = d?.connections || [];
+  const conns = allConns.filter(c => c.active || (c.age_ms != null && c.age_ms < 300000));
   const active = conns.filter(c=>c.active);
-  document.getElementById('conn-count').textContent = active.length + ' active / ' + conns.length + ' recent';
+  const recent = conns.filter(c=>!c.active);
+  document.getElementById('conn-count').textContent = active.length + ' live / ' + recent.length + ' recent (5min)';
   if(conns.length===0){
     tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:20px">No connections yet</td></tr>';
   } else {
-    tbody.innerHTML = conns.map(c=>{
-      const tc = c.type==='proxy'?'blue':c.type==='static'?'dim':'green';
-      const sc = c.status>=500?'red':c.status>=400?'orange':c.status>=200?'green':'dim';
-      const age = c.age_ms > 60000 ? Math.round(c.age_ms/1000)+'s ago' : c.age_ms > 0 ? (c.age_ms/1000).toFixed(1)+'s' : 'now';
-      const activeBadge = c.active ? '<span class="badge green" style="font-size:9px">live</span>' : '';
-      return `<tr style="opacity:${c.active?1:0.7}">
-        <td style="color:var(--accent2)">${c.ip}</td>
-        <td><span class="badge dim">${c.method||'?'}</span></td>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.path}">${c.path}</td>
-        <td>${c.status?`<span class="badge ${sc}">${c.status}</span>`:'—'} ${activeBadge}</td>
-        <td style="color:var(--dim);font-size:11px">${age}</td>
-        <td><span class="badge ${tc}">${c.type||'?'}</span></td></tr>`;
-    }).join('');
+    const fmtAge = ms => ms < 1000 ? 'now' : ms < 60000 ? (ms/1000).toFixed(1)+'s ago' : Math.round(ms/1000)+'s ago';
+    const rows = [];
+    if(active.length > 0) {
+      rows.push(`<tr><td colspan="6" style="padding:4px 8px;font-size:10px;color:var(--dim);background:var(--bg3);letter-spacing:.05em">LIVE (${active.length})</td></tr>`);
+      active.forEach(c=>{
+        const tc=c.type==='proxy'?'blue':c.type==='static'?'dim':'green';
+        const longConn = c.age_ms > 5000;
+        rows.push(`<tr style="border-left:2px solid var(--accent)">
+          <td style="color:var(--accent2)">${c.ip}</td>
+          <td><span class="badge dim">${c.method||'?'}</span></td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.path}">${c.path}</td>
+          <td><span class="badge green" style="font-size:9px">live</span></td>
+          <td style="color:${longConn?'var(--warn)':'var(--dim)'};font-size:11px">${fmtAge(c.age_ms)}</td>
+          <td><span class="badge ${tc}">${c.type||'?'}</span></td></tr>`);
+      });
+    }
+    if(recent.length > 0) {
+      rows.push(`<tr><td colspan="6" style="padding:4px 8px;font-size:10px;color:var(--dim);background:var(--bg3);letter-spacing:.05em">OSTATNIE ${recent.length} (do 5 min)</td></tr>`);
+      recent.forEach(c=>{
+        const tc=c.type==='proxy'?'blue':c.type==='static'?'dim':'green';
+        const sc=c.status>=500?'red':c.status>=400?'orange':c.status>=200?'green':'dim';
+        rows.push(`<tr style="opacity:0.7">
+          <td style="color:var(--accent2)">${c.ip}</td>
+          <td><span class="badge dim">${c.method||'?'}</span></td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.path}">${c.path}</td>
+          <td>${c.status?`<span class="badge ${sc}">${c.status}</span>`:'\xe2\x80\x94'}</td>
+          <td style="color:var(--dim);font-size:11px">${fmtAge(c.age_ms)}</td>
+          <td><span class="badge ${tc}">${c.type||'?'}</span></td></tr>`);
+      });
+    }
+    tbody.innerHTML = rows.join('');
   }
-  const ipC={};conns.forEach(c=>ipC[c.ip]=(ipC[c.ip]||0)+1);
+    const ipC={};conns.forEach(c=>ipC[c.ip]=(ipC[c.ip]||0)+1);
   const entries=Object.entries(ipC).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const mx=Math.max(1,...Object.values(ipC));
   const cols=['#00d4aa','#0088ff','#ff6b35','#ff3355'];
