@@ -1,5 +1,9 @@
 #include "../include/np_types.hh"
 #include "../src/http/parser.cc"
+// Stub for g_log — required by NW_WARN/NW_LOG macros in parser.cc.
+// The real definition lives in server.cc, not linked in unit tests.
+LogBuffer g_log;
+
 #include <cassert>
 #include <cstring>
 #include <cstdio>
