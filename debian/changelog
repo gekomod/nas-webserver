@@ -1,3 +1,33 @@
+nas-web (2.3.0-1) stable; urgency=medium
+
+  * Wersja 2.3.0 — przejście na semver (poprzednio 2.2.x)
+  * Bezpieczeństwo:
+    - nas-web.service: serwis działa jako dedykowany użytkownik nas-web
+      zamiast root; AmbientCapabilities=CAP_NET_BIND_SERVICE dla portów <1024
+    - nas-web.service: NoNewPrivileges=yes, ProtectSystem=strict,
+      MemoryDenyWriteExecute=yes, RestrictNamespaces=yes
+    - admin_tls_only: nowa opcja konfiguracyjna — wymusza HTTPS dla
+      /np_admin i /apis/admin (domyślnie true); plain HTTP → 301 redirect
+    - include/admin_tls_guard.hh: nowy middleware egzekwujący TLS-only
+      dla endpointów admina
+    - debian/postinst: useradd nas-web, chmod 640 na nas-web.conf,
+      chown nas-web:nas-web /var/log/nas-web
+  * Testy:
+    - tests/test_waf_regex.cc: unit testy WAF regex patterns (16 sekcji,
+      ~80 przypadków) + benchmark ReDoS per kategoria
+    - tests/integration/test_deb_package.sh: testy integracyjne pakietu
+      .deb (install, metadata, user, permissions, systemd, HTTP smoke,
+      WAF, upgrade, purge)
+    - CMakeLists.txt: test_waf_regex dodany do foreach enable_testing()
+  * Projekt:
+    - LICENSE: dodano plik MIT license
+    - .gitignore: build/, dist/, *.o, *.deb, CMakeFiles/, vendor/src/
+    - SECURITY.md: polityka zgłaszania podatności, timeline, operator checklist
+    - debian/rules: wymuszenie LANG=en_US.UTF-8 podczas buildu
+    - README.md: dodano pkg-config do listy build dependencies
+
+ -- NAS Panel Team <admin@localhost>  Sat, 14 Mar 2026 17:08:54 +0100
+
 nas-web (2.2.84-1) stable; urgency=low
 
   * README.md: kompletna dokumentacja GitHub (features, config, scripting, endpoints)

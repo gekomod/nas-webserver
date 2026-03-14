@@ -2432,11 +2432,15 @@ static void run_worker(Worker* w, int wfd, std::atomic<int>& ready) {
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
+// Async-signal-safe signal handlers (lambdas with captures are not signal-safe)
+static void handle_sighup(int)  { g_reload.store(true); }
+static void handle_sigterm(int) { g_running.store(false); }
+
 int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGHUP,  [](int){ g_reload.store(true); });
-    signal(SIGTERM, [](int){ g_running.store(false); });
-    signal(SIGINT,  [](int){ g_running.store(false); });
+    signal(SIGHUP,  handle_sighup);
+    signal(SIGTERM, handle_sigterm);
+    signal(SIGINT,  handle_sigterm);
 
     fprintf(stderr,
         "\xE2\x95\x94\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90"

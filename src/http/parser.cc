@@ -8,6 +8,10 @@
 
 enum class ParseResult { Complete, Incomplete, Error, TooLarge };
 
+// Maximum safe sizes — guards against memory exhaustion and integer overflow
+constexpr size_t MAX_SAFE_BODY   = 100 * 1024 * 1024;  // 100 MB
+constexpr size_t MAX_HEADER_VALUE = 8192;               //   8 KB per header value
+
 static std::string url_decode(std::string_view sv){
     std::string out; out.reserve(sv.size());
     for(size_t i=0;i<sv.size();){
@@ -22,7 +26,7 @@ static std::string url_decode(std::string_view sv){
 
 std::pair<ParseResult,size_t> parse_request(const char* buf,size_t len,Request& req){
     if(len==0) return {ParseResult::Incomplete,0};
-    if(len>NP_MAX_BODY+NP_BUF) return {ParseResult::TooLarge,0};
+    if(len>MAX_SAFE_BODY+NP_BUF) return {ParseResult::TooLarge,0};
     std::string_view sv{buf,len};
     auto hend=sv.find("\r\n\r\n");
     if(hend==std::string_view::npos) return {ParseResult::Incomplete,0};
@@ -52,9 +56,22 @@ std::pair<ParseResult,size_t> parse_request(const char* buf,size_t len,Request& 
         std::string k{line.substr(0,colon)};
         auto val=line.substr(colon+1);
         while(!val.empty()&&(val[0]==' '||val[0]=='\t')) val.remove_prefix(1);
+        // Validate header value length — prevents header-based memory exhaustion
+        if(val.size() > MAX_HEADER_VALUE) {
+            NW_WARN("parser", "Header value too large: %s", k.c_str());
+            return {ParseResult::Error,0};
+        }
         std::string v{val};
         if(ci_eq(k,"Host")) req.host=v;
-        else if(ci_eq(k,"Content-Length")) req.content_length=(size_t)std::stoul(v);
+        else if(ci_eq(k,"Content-Length")) {
+            try {
+                req.content_length = std::stoul(v);
+                if(req.content_length > MAX_SAFE_BODY) return {ParseResult::TooLarge,0};
+            } catch(const std::exception& ex) {
+                NW_WARN("parser", "Invalid Content-Length: %s", ex.what());
+                return {ParseResult::Error,0};
+            }
+        }
         else if(ci_eq(k,"Connection")){
             if(ci_eq(v,"close")) req.keep_alive=false;
             else if(ci_eq(v,"keep-alive")) req.keep_alive=true;
