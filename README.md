@@ -4,6 +4,7 @@
 
 [![Build](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml)
 [![CodeQL](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y61W019Z)
 ![Version](https://img.shields.io/badge/version-2.2.84-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
