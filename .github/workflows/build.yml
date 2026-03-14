@@ -14,8 +14,8 @@ jobs:
     strategy:
       matrix:
         with_modsec: [ON, OFF]
-        with_zstd: [ON]
-        with_janet: [ON]
+        with_zstd: [ON, OFF]
+        with_janet: [ON, OFF]
 
     steps:
       - uses: actions/checkout@v4
@@ -48,9 +48,16 @@ jobs:
       - name: Fetch submodules / vendors
         run: |
           echo "Fetch vendors if needed"
-          bash vendor/janet/fetch_janet.sh
-          bash vendor/quickjs/fetch_quickjs.sh
-          bash vendor/zstd/fetch_zstd.sh
+          if [ -f "vendor/janet/fetch_janet.sh" ]; then bash vendor/janet/fetch_janet.sh; fi
+          if [ -f "vendor/quickjs/fetch_quickjs.sh" ]; then bash vendor/quickjs/fetch_quickjs.sh; fi
+          if [ -f "vendor/zstd/fetch_zstd.sh" ]; then bash vendor/zstd/fetch_zstd.sh; fi
+
+      - name: Extract version from changelog
+        id: version
+        run: |
+          VERSION=$(head -1 debian/changelog | grep -oP '\(\K[^)]+' | head -1 | sed 's/-[0-9]*$//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
 
       - name: Run build-deb.sh
         run: |
@@ -60,9 +67,35 @@ jobs:
           if [ "${{ matrix.with_janet }}" = "ON" ]; then ARGS="$ARGS --with-janet"; fi
           bash build-deb.sh $ARGS
 
+      - name: Rename .deb package with version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          MODSEC="${{ matrix.with_modsec }}"
+          ZSTD="${{ matrix.with_zstd }}"
+          JANET="${{ matrix.with_janet }}"
+          
+          # Znajdź wygenerowany plik .deb
+          ORIGINAL_DEB=$(ls *.deb | head -1)
+          
+          if [ -n "$ORIGINAL_DEB" ]; then
+            NEW_NAME="nas-web-${VERSION}-modsec${MODSEC}-zstd${ZSTD}-janet${JANET}.deb"
+            mv "$ORIGINAL_DEB" "$NEW_NAME"
+            echo "Renamed: $ORIGINAL_DEB -> $NEW_NAME"
+            echo "deb_name=$NEW_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: No .deb file found!"
+            exit 1
+          fi
+        id: rename
+
       - name: Upload .deb package
         uses: actions/upload-artifact@v4
         with:
-          name: nas-web-${{ matrix.with_modsec }}-${{ matrix.with_zstd }}-${{ matrix.with_janet }}.deb
-          path: ./*.deb
+          name: nas-web-${{ steps.version.outputs.version }}-modsec${{ matrix.with_modsec }}-zstd${{ matrix.with_zstd }}-janet${{ matrix.with_janet }}
+          path: ${{ steps.rename.outputs.deb_name }}
           retention-days: 7
+
+      - name: List generated packages
+        run: |
+          echo "Generated packages:"
+          ls -la *.deb
