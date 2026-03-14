@@ -2,8 +2,8 @@
 
 > High-performance C++20 reverse proxy and static file server for NAS/homelab environments.
 
-[![Build .deb package](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/build.yml)
-[![CodeQL](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml/badge.svg)](https://github.com/gekomod/nas-webserver/actions/workflows/codeql.yml)
+[![Build](https://github.com/nas-panel/nas-web/actions/workflows/build.yml/badge.svg)](https://github.com/nas-panel/nas-web/actions/workflows/build.yml)
+[![CodeQL](https://github.com/nas-panel/nas-web/actions/workflows/codeql.yml/badge.svg)](https://github.com/nas-panel/nas-web/actions/workflows/codeql.yml)
 ![Version](https://img.shields.io/badge/version-2.2.84-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -34,7 +34,7 @@
 ```
 Ubuntu 22.04+ / Debian 12+
 cmake >= 3.18
-libuv1-dev libssl-dev zlib1g-dev libbrotli-dev libnghttp2-dev liblua5.4-dev
+libuv1-dev libssl-dev zlib1g-dev libbrotli-dev libnghttp2-dev liblua5.4-dev pkg-config
 ```
 
 ### Build and install

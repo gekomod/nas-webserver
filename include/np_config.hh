@@ -175,6 +175,9 @@ struct Config {
     std::string admin_user{"admin"};
     std::string admin_password{""};  // empty = no auth required
     std::vector<std::string> admin_allow_ips; // empty=allow all; prefix match e.g. "192.168.1."
+    // Require TLS for /np_admin and admin API endpoints.
+    // Plain HTTP requests receive 301 redirect to https://.
+    bool admin_tls_only = true;
 
     // ── Feature flags ────────────────────────────────────────────────────────
     bool  module_cache{true};

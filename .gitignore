@@ -1,0 +1,48 @@
+# Build output
+build/
+dist/
+*.o
+*.a
+*.so
+*.so.*
+nas-web
+
+# Debian packaging artefacts
+debian/.debhelper/
+debian/nas-web/
+debian/debhelper-build-stamp
+debian/files
+debian/*.log
+debian/*.substvars
+*.deb
+*.ddeb
+*.changes
+*.buildinfo
+*.dsc
+*.tar.*
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+install_manifest.txt
+_deps/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Vendor fetched at build-time (not committed)
+vendor/zstd/src/
+vendor/janet/src/
+vendor/quickjs/src/
+
+# Secrets / local config overrides
+*.local.conf
+.env

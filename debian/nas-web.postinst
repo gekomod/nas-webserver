@@ -12,6 +12,26 @@ case "$1" in
         touch /var/log/nas-web/access.log /var/log/nas-web/error.log
         chmod 644 /var/log/nas-web/access.log /var/log/nas-web/error.log
 
+        # Create dedicated system user for privilege-separated execution
+        if ! id -u nas-web > /dev/null 2>&1; then
+            useradd --system \
+                    --no-create-home \
+                    --shell /usr/sbin/nologin \
+                    --comment "nas-web service account" \
+                    nas-web
+        fi
+        
+        # Config must not be world-readable (contains admin password)
+        if [ -f /etc/nas-web/nas-web.conf ]; then
+            chown root:nas-web /etc/nas-web/nas-web.conf
+            chmod 640 /etc/nas-web/nas-web.conf
+        fi
+
+        # Log dir owned by service user
+        if [ -d /var/log/nas-web ]; then
+            chown nas-web:nas-web /var/log/nas-web
+        fi
+
         # Reload systemd and start service
         if [ -x /bin/systemctl ] || [ -x /usr/bin/systemctl ]; then
             systemctl daemon-reload || true
