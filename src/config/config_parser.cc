@@ -265,7 +265,7 @@ std::shared_ptr<Config> parse_config(const std::string& path){
         else if(key=="waf_regex_block")      {cfg->waf_regex_block      =pb(p.word());}
         else if(key=="blacklist_file")      {cfg->blacklist_file=p.word();}
         else if(key=="waf_regex_check_body") {cfg->waf_regex_check_body =pb(p.word());}
-        else if(key == "admin_tls_only") { cfg.admin_tls_only = (val == "true" || val == "1" || val == "yes"); }
+        else if(key == "admin_tls_only") { cfg->admin_tls_only = (val == "true" || val == "1" || val == "yes"); }
         // ACME config block
         else if(key=="acme"){
             p.expect(Token::LBrace);
