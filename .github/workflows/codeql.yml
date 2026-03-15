@@ -41,6 +41,8 @@ jobs:
               - vendor/zstd
               - vendor/janet
               - vendor/cssmin
+              - vendor/lua-cjson
+              - vendor/sqlite
 
       - name: Configure
         run: |
@@ -54,7 +56,9 @@ jobs:
             -DWITH_ZSTD=OFF \
             -DWITH_JANET=OFF \
             -DWITH_MODSEC=OFF \
-            -DWITH_QUICHE=OFF
+            -DWITH_QUICHE=OFF \
+            -DWITH_SQLITE=ON \
+            -DWITH_LUA_CJSON=ON
 
       - name: Build
         run: cmake --build build --parallel $(nproc)
