@@ -1935,8 +1935,7 @@ static void dispatch(Conn* conn) {
         if(g_blacklist.count(conn->client_ip)) {
             NW_DEBUG("blacklist", "Blocked IP: %s", conn->client_ip.c_str());
             g_stat_err.fetch_add(1, std::memory_order_relaxed);
-            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
-                delete static_cast<Conn*>(h->data); });
+            close_conn(conn);  // must go via close_conn — idle_timer may be active
             return;
         }
     }
@@ -1949,8 +1948,7 @@ static void dispatch(Conn* conn) {
             std::lock_guard<std::mutex> lk(g_blacklist_mu);
             g_blacklist.insert(conn->client_ip);
             blacklist_save_nolock();
-            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
-                delete static_cast<Conn*>(h->data); });
+            close_conn(conn);  // must go via close_conn — idle_timer may be active
             return;
         }
     }
@@ -2304,6 +2302,7 @@ static void on_connection(uv_stream_t* server, int status) {
     conn->client.data = conn;
 
     if(uv_accept(server, (uv_stream_t*)&conn->client) != 0) {
+        // idle_timer not yet initialised — safe to delete directly
         uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){ delete static_cast<Conn*>(h->data); });
         return;
     }
@@ -2326,6 +2325,7 @@ static void on_connection(uv_stream_t* server, int status) {
         if(g_conn_count[conn->client_ip] >= g_max_conns_per_ip) {
             NW_DEBUG("connlimit", "IP %s over limit (%d)", conn->client_ip.c_str(), g_max_conns_per_ip);
             g_stat_err.fetch_add(1, std::memory_order_relaxed);
+            // idle_timer not yet initialised — safe to delete directly
             uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
                 delete static_cast<Conn*>(h->data); });
             return;
@@ -2338,6 +2338,7 @@ static void on_connection(uv_stream_t* server, int status) {
         std::lock_guard<std::mutex> lk(g_blacklist_mu);
         if(g_blacklist.count(conn->client_ip)){
             NW_DEBUG("blacklist","Early drop banned IP: %s", conn->client_ip.c_str());
+            // idle_timer not yet initialised — safe to delete directly
             uv_close((uv_handle_t*)&conn->client,[](uv_handle_t* h){
                 delete static_cast<Conn*>(h->data);});
             return;
