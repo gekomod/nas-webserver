@@ -8,100 +8,148 @@ on:
 
 jobs:
   build-deb:
-    name: Build nas-web .deb
+    name: Build nas-web .deb (${{ matrix.variant }})
     runs-on: ubuntu-24.04
 
     strategy:
+      fail-fast: false
       matrix:
-        with_modsec: [ON, OFF]
-        with_zstd: [ON, OFF]
-        with_janet: [ON, OFF]
-        with_sqlite: [ON, OFF]
-        with_lua_cjson: [ON, OFF]
+        include:
+          # Wariant minimalny — zawsze budowany, najszybszy
+          - variant: minimal
+            with_modsec: OFF
+            with_zstd:   OFF
+            with_janet:  OFF
+            with_sqlite: ON
+            with_lua_cjson: ON
+
+          # Wariant pełny — wszystkie moduły
+          - variant: full
+            with_modsec: ON
+            with_zstd:   ON
+            with_janet:  ON
+            with_sqlite: ON
+            with_lua_cjson: ON
+
+          # Wariant bez vendorów — sprawdza czy build działa bez opcjonalnych
+          - variant: no-vendors
+            with_modsec: OFF
+            with_zstd:   OFF
+            with_janet:  OFF
+            with_sqlite: OFF
+            with_lua_cjson: OFF
 
     steps:
       - uses: actions/checkout@v4
 
+      # Cache apt packages — przyspiesza kolejne runy
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: apt-${{ runner.os }}-
+
       - name: Install base build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
             pkg-config \
             dpkg-dev \
             git \
             ca-certificates \
+            curl \
             libuv1-dev \
             libssl-dev \
             libbrotli-dev \
             libnghttp2-dev \
             liblua5.4-dev \
-            zlib1g-dev \
+            zlib1g-dev
+
+      - name: Install ModSecurity deps
+        if: matrix.with_modsec == 'ON'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
             libmodsecurity-dev \
             libpcre2-dev \
             libxml2-dev \
             libyajl-dev \
-            libcurl4-openssl-dev \
-            libmaxminddb-dev \
-            libgeoip-dev \
-            libzstd-dev
+            libcurl4-openssl-dev
 
-      - name: Fetch submodules / vendors
+      - name: Fetch vendors
         run: |
-          echo "Fetch vendors if needed"
-          if [ -f "vendor/janet/fetch_janet.sh" ]; then bash vendor/janet/fetch_janet.sh; fi
-          if [ -f "vendor/quickjs/fetch_quickjs.sh" ]; then bash vendor/quickjs/fetch_quickjs.sh; fi
-          if [ -f "vendor/zstd/fetch_zstd.sh" ]; then bash vendor/zstd/fetch_zstd.sh; fi
+          # SQLite3 amalgamation
+          if [ "${{ matrix.with_sqlite }}" = "ON" ] && [ -f "vendor/sqlite/fetch_sqlite.sh" ]; then
+            bash vendor/sqlite/fetch_sqlite.sh
+          fi
+          # lua-cjson
+          if [ "${{ matrix.with_lua_cjson }}" = "ON" ] && [ -f "vendor/lua-cjson/fetch_lua_cjson.sh" ]; then
+            bash vendor/lua-cjson/fetch_lua_cjson.sh
+          fi
+          # QuickJS
+          if [ -f "vendor/quickjs/fetch_quickjs.sh" ]; then
+            bash vendor/quickjs/fetch_quickjs.sh
+          fi
+          # zstd (vendored — nie używaj libzstd-dev)
+          if [ "${{ matrix.with_zstd }}" = "ON" ] && [ -f "vendor/zstd/fetch_zstd.sh" ]; then
+            bash vendor/zstd/fetch_zstd.sh
+          fi
+          # Janet
+          if [ "${{ matrix.with_janet }}" = "ON" ] && [ -f "vendor/janet/fetch_janet.sh" ]; then
+            bash vendor/janet/fetch_janet.sh
+          fi
 
       - name: Extract version from changelog
         id: version
         run: |
-          VERSION=$(head -1 debian/changelog | grep -oP '\(\K[^)]+' | head -1 | sed 's/-[0-9]*$//')
+          VERSION=$(head -1 debian/changelog | grep -oP '\(\K[^)]+' | head -1)
+          UPSTREAM=$(echo "$VERSION" | sed 's/-[0-9]*$//')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 
-      - name: Run build-deb.sh
+      - name: Build .deb
         run: |
-          ARGS="" bash build-deb.sh --with-modsec --with-zstd --with-janet --with-sqlite --with-lua-cjson
-          if [ "${{ matrix.with_modsec }}" = "ON" ]; then ARGS="$ARGS --with-modsec"; fi
-          if [ "${{ matrix.with_zstd }}" = "ON" ]; then ARGS="$ARGS --with-zstd"; fi
-          if [ "${{ matrix.with_janet }}" = "ON" ]; then ARGS="$ARGS --with-janet"; fi
-          if [ "${{ matrix.with_sqlite }}" = "ON" ]; then ARGS="$ARGS --with-sqlite"; fi
-          if [ "${{ matrix.with_lua_cjson }}" = "ON" ]; then ARGS="$ARGS --with-lua-cjson"; fi
+          ARGS=""
+          [ "${{ matrix.with_modsec }}"    = "ON" ] && ARGS="$ARGS --with-modsec"
+          [ "${{ matrix.with_zstd }}"      = "ON" ] && ARGS="$ARGS --with-zstd"
+          [ "${{ matrix.with_janet }}"     = "ON" ] && ARGS="$ARGS --with-janet"
+          [ "${{ matrix.with_sqlite }}"    = "OFF" ] && ARGS="$ARGS --no-sqlite"
+          [ "${{ matrix.with_lua_cjson }}" = "OFF" ] && ARGS="$ARGS --no-lua-cjson"
+          echo "Running: bash build-deb.sh $ARGS"
           bash build-deb.sh $ARGS
 
-      - name: Rename .deb package with version
+      - name: Rename .deb with variant suffix
+        id: rename
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          MODSEC="${{ matrix.with_modsec }}"
-          ZSTD="${{ matrix.with_zstd }}"
-          JANET="${{ matrix.with_janet }}"
-          SQLITE="${{ matrix.with_sqlite }}"
-          LUACJSON="${{ matrix.with_lua_cjson }}"
-          
-          # Znajdź wygenerowany plik .deb
-          ORIGINAL_DEB=$(ls *.deb | head -1)
-          
-          if [ -n "$ORIGINAL_DEB" ]; then
-            NEW_NAME="nas-web-${VERSION}-modsec${MODSEC}-zstd${ZSTD}-janet${JANET}-sqlite${SQLITE}-luacjson${LUACJSON}.deb"
-            mv "$ORIGINAL_DEB" "$NEW_NAME"
-            echo "Renamed: $ORIGINAL_DEB -> $NEW_NAME"
-            echo "deb_name=$NEW_NAME" >> $GITHUB_OUTPUT
-          else
-            echo "ERROR: No .deb file found!"
+          ORIGINAL=$(ls *.deb 2>/dev/null | head -1)
+          if [ -z "$ORIGINAL" ]; then
+            echo "ERROR: No .deb file found" >&2
             exit 1
           fi
-        id: rename
+          NEW="nas-web-${{ steps.version.outputs.version }}-${{ matrix.variant }}.deb"
+          mv "$ORIGINAL" "$NEW"
+          echo "deb_name=$NEW" >> $GITHUB_OUTPUT
+          echo "Renamed: $ORIGINAL -> $NEW"
+          ls -lh "$NEW"
 
-      - name: Upload .deb package
+      - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nas-web-${{ steps.version.outputs.version }}-modsec${{ matrix.with_modsec }}-zstd${{ matrix.with_zstd }}-janet${{ matrix.with_janet }}
+          name: nas-web-${{ steps.version.outputs.version }}-${{ matrix.variant }}
           path: ${{ steps.rename.outputs.deb_name }}
-          retention-days: 7
+          retention-days: 14
 
-      - name: List generated packages
+      - name: Verify .deb metadata
         run: |
-          echo "Generated packages:"
-          ls -la *.deb
+          DEB="${{ steps.rename.outputs.deb_name }}"
+          echo "=== Package info ==="
+          dpkg-deb --info "$DEB"
+          echo ""
+          echo "=== Contents ==="
+          dpkg-deb --contents "$DEB"
+          echo ""
+          echo "=== Runtime deps ==="
+          dpkg-deb --field "$DEB" Depends
