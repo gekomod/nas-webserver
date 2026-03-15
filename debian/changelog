@@ -1,3 +1,52 @@
+nas-web (2.3.1-1) stable; urgency=high
+
+  * Bugfix: uv_close assertion crash (ABRT) przy wysokim ruchu
+    - close_conn() pomijane w dispatch() dla blacklist/autoban — idle_timer
+      nie był zamykany przez uv_close(), co powodowało assertion failure
+      w libuv (uv__finish_close: UV_HANDLE_CLOSING)
+    - Naprawiono: wszystkie ścieżki zamykania połączeń po uruchomieniu
+      idle_timer przechodzą teraz przez close_conn()
+  * Bugfix: serwer nie startował po zmianie User=nas-web w .service
+    - useradd nas-web dodany do debian/postinst
+    - chown nas-web:nas-web /var/log/nas-web i /var/lib/nas-web
+    - chmod 640 /etc/nas-web/nas-web.conf
+  * Bugfix: "Cannot write blacklist.txt" po zmianie na nas-web user
+    - Zastąpiono plikami SQLite3 (vendor/sqlite) — atomowe zapisy WAL
+    - Jednorazowa migracja blacklist.txt i recent_bans.txt przy pierwszym starcie
+  * Bugfix: Lua PANIC "attempt to index a nil value" przy starcie
+    - luaopen_package() nie był wywoływany — package.preload było nil
+    - register_cjson() crashował próbując zaindeksować nil
+    - Naprawiono: dodano luaopen_package() + defensywne lua_istable() check
+  * Bugfix: parser.cc — niezabezpieczony std::stoul dla Content-Length
+    - Brak try/catch powodował wyjątek przy nieprawidłowej wartości
+    - Dodano MAX_SAFE_BODY (100MB), MAX_HEADER_VALUE (8KB), walidację
+  * Bugfix: lambdy w signal() — undefined behavior (nie async-signal-safe)
+    - signal(SIGHUP/SIGTERM/SIGINT) używało lambd z captures
+    - Zastąpiono named static functions handle_sighup/handle_sigterm
+  * Nowe: SQLite3 persistence (vendor/sqlite, amalgamation 3.45.2)
+    - Zastępuje blacklist.txt i recent_bans.txt
+    - WAL mode, SQLITE_OMIT_LOAD_EXTENSION, brak zależności systemowych
+    - Nowy plik: include/nas_db.hh (NasDb wrapper)
+    - Build: bash vendor/sqlite/fetch_sqlite.sh
+  * Nowe: lua-cjson (vendor/lua-cjson, openresty fork 2.1.0.14)
+    - require("cjson") dostępne w każdym skrypcie Lua middleware
+    - cjson.encode() / cjson.decode() / cjson.safe
+    - Stub automatyczny gdy nie pobrano (nie crashuje)
+    - Build: bash vendor/lua-cjson/fetch_lua_cjson.sh
+  * Nowe: np.base64_decode() w Lua API
+  * Nowe: admin panel — karty SQLite3 i lua-cjson w zakładce Modules
+  * Nowe: Lua snippet "JSON API response" z przykładem cjson
+  * Poprawka: build-deb.sh
+    - Dodano --with-sqlite, --no-sqlite, --with-lua-cjson, --no-lua-cjson
+    - Automatyczne pobieranie vendorów przed buildem
+    - Obsługa sudo gdy nie root, fallback dpkg bez --root-owner-group
+    - Dynamiczna numeracja kroków, zlib1g w runtime deps
+  * Poprawka: CMakeLists.txt — -Wno-implicit-fallthrough dla sqlite3_vendor
+  * Poprawka: test_parser.cc, test_cache.cc — stub LogBuffer g_log
+    (fix: undefined reference to g_log przy budowaniu testów)
+
+ -- NAS Panel Team <admin@localhost>  Sun, 15 Mar 2026 17:30:00 +0100
+
 nas-web (2.3.0-1) stable; urgency=medium
 
   * Wersja 2.3.0 — przejście na semver (poprzednio 2.2.x)

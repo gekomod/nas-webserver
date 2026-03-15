@@ -51,6 +51,10 @@ static void acme_init(...) {}
 #endif
 #include "../../include/admin_panel.h"
 #include "../../include/autoban.hh"
+#define NAS_DB_IMPL
+#include "../../include/nas_db.hh"
+NasDb g_db;  // global SQLite instance
+
 #include "../../include/waf.hh"
 #include "../../include/waf_regex.hh"
 
@@ -93,85 +97,44 @@ AutoBan           g_autoban;
 WafRegexEngine    g_waf_regex;
 static std::string                        g_blacklist_file{"/var/lib/nas-web/blacklist.txt"};
 
-// Musi być wywoływane BEZ trzymania g_blacklist_mu
-static std::atomic<bool> g_blacklist_dirty{false};
+// ── Persistence via SQLite (nas_db.hh) ───────────────────────────────────────
+// blacklist_save_nolock() and blacklist_flush_sync() now write to SQLite.
+// The .txt files are only used for initial migration at startup.
 
-static void blacklist_save_nolock(){
-    g_blacklist_dirty.store(true, std::memory_order_relaxed);
-}
-
-// ── AutoBan recent_bans persistence ──────────────────────────────────────────
-static const std::string G_BANS_FILE = "/var/lib/nas-web/recent_bans.txt";
-
-static void bans_save(){
-    FILE* f = fopen(G_BANS_FILE.c_str(), "w");
-    if(!f) return;
-    std::lock_guard<std::mutex> lk(g_autoban.mu_pub());
-    for(auto& b : g_autoban.recent_bans){
-        std::string esc;
-        for(char c : b.detail){ if(c=='|') esc+="\\|"; else esc+=c; }
-        fprintf(f, "%lld|%s|%s|%s\n", (long long)b.ts, b.ip.c_str(), b.reason.c_str(), esc.c_str());
-    }
-    fclose(f);
-}
+// blacklist_save_nolock() removed — SQLite writes are immediate,
+// no dirty flag needed. Call sites replaced with g_db.blacklist_add/remove().
 
 static void blacklist_flush_sync(){
-    std::filesystem::create_directories("/var/lib/nas-web");
-    std::vector<std::string> snap;
-    bool dirty = false;
-    {
-        std::lock_guard<std::mutex> lk(g_blacklist_mu);
-        dirty = g_blacklist_dirty.load(std::memory_order_relaxed);
-        if(dirty){
-            snap.assign(g_blacklist.begin(), g_blacklist.end());
-            g_blacklist_dirty.store(false, std::memory_order_relaxed);
-        }
+    // Ban events: sync in-memory recent_bans deque → SQLite
+    if(!g_db.is_open()) return;
+    std::lock_guard<std::mutex> lk(g_autoban.mu_pub());
+    for(auto& b : g_autoban.recent_bans){
+        DbBanEvent ev;
+        ev.ip = b.ip; ev.reason = b.reason; ev.detail = b.detail; ev.ts = b.ts;
+        g_db.ban_insert(ev);
     }
-    if(dirty){
-        FILE* f = fopen(g_blacklist_file.c_str(), "w");
-        if(!f){ NW_WARN("blacklist","Cannot write %s",g_blacklist_file.c_str()); }
-        else { for(auto& ip : snap) fprintf(f, "%s\n", ip.c_str()); fclose(f); }
-    }
-    bans_save();
 }
 
 static void bans_load(){
-    FILE* f = fopen(G_BANS_FILE.c_str(), "r");
-    if(!f) return;
-    char buf[512];
-    while(fgets(buf, sizeof(buf), f)){
-        std::string line(buf);
-        if(!line.empty() && line.back()=='\n') line.pop_back();
-        // Parse: ts|ip|reason|detail
-        auto p1 = line.find('|');
-        auto p2 = line.find('|', p1+1);
-        auto p3 = line.find('|', p2+1);
-        if(p1==std::string::npos||p2==std::string::npos||p3==std::string::npos) continue;
+    if(!g_db.is_open()) return;
+    auto events = g_db.ban_load_recent(200);
+    std::lock_guard<std::mutex> lk(g_autoban.mu_pub());
+    for(auto& e : events){
         AutoBan::BanEvent ev;
-        ev.ts     = (time_t)std::stoll(line.substr(0, p1));
-        ev.ip     = line.substr(p1+1, p2-p1-1);
-        ev.reason = line.substr(p2+1, p3-p2-1);
-        ev.detail = line.substr(p3+1);
+        ev.ip = e.ip; ev.reason = e.reason; ev.detail = e.detail; ev.ts = e.ts;
         g_autoban.recent_bans.push_back(ev);
     }
-    fclose(f);
-    NW_INFO("autoban", "Loaded %zu ban records from %s",
-            g_autoban.recent_bans.size(), G_BANS_FILE.c_str());
+    NW_INFO("autoban", "Loaded %zu ban records from SQLite",
+            g_autoban.recent_bans.size());
 }
 
 static void blacklist_load(){
-    FILE* f = fopen(g_blacklist_file.c_str(), "r");
-    if(!f) return;
-    char buf[64];
+    if(!g_db.is_open()) return;
+    auto ips = g_db.blacklist_load();
     std::lock_guard<std::mutex> lk(g_blacklist_mu);
-    while(fgets(buf, sizeof(buf), f)){
-        std::string ip(buf);
-        while(!ip.empty() && (ip.back()=='\n'||ip.back()=='\r'||ip.back()==' ')) ip.pop_back();
-        if(!ip.empty()) g_blacklist.insert(ip);
-    }
-    fclose(f);
-    NW_INFO("server", "Loaded %zu blacklisted IPs from %s",
-            g_blacklist.size(), g_blacklist_file.c_str());
+    g_blacklist.insert(ips.begin(), ips.end());
+    NW_INFO("server", "Loaded %zu blacklisted IPs from SQLite",
+            g_blacklist.size());
 }
 
 // ── Per-IP connection counter ─────────────────────────────────────────────
@@ -1156,11 +1119,11 @@ static void dispatch(Conn* conn) {
                 std::lock_guard<std::mutex> lk(g_blacklist_mu);
                 if(action=="add") {
                     g_blacklist.insert(ip);
-                    blacklist_save_nolock();
+                    g_db.blacklist_add(ip);
                     NW_INFO("blacklist","Added: %s",ip.c_str());
                 } else if(action=="remove") {
                     g_blacklist.erase(ip);
-                    blacklist_save_nolock();
+                    g_db.blacklist_remove(ip);
                     NW_INFO("blacklist","Removed: %s",ip.c_str());
                 }
                 } // lock released before audit
@@ -1935,7 +1898,8 @@ static void dispatch(Conn* conn) {
         if(g_blacklist.count(conn->client_ip)) {
             NW_DEBUG("blacklist", "Blocked IP: %s", conn->client_ip.c_str());
             g_stat_err.fetch_add(1, std::memory_order_relaxed);
-            close_conn(conn);  // must go via close_conn — idle_timer may be active
+            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
+                delete static_cast<Conn*>(h->data); });
             return;
         }
     }
@@ -1945,9 +1909,11 @@ static void dispatch(Conn* conn) {
         auto ua  = std::string(conn->req.headers.get("User-Agent"));
         auto verdict = g_autoban.check(conn->client_ip, conn->req.path, ua, 0);
         if(verdict == AutoBan::Verdict::Ban) {
-            std::lock_guard<std::mutex> lk(g_blacklist_mu);
-            g_blacklist.insert(conn->client_ip);
-            blacklist_save_nolock();
+            {
+                std::lock_guard<std::mutex> lk(g_blacklist_mu);
+                g_blacklist.insert(conn->client_ip);
+            }
+            g_db.blacklist_add(conn->client_ip);
             close_conn(conn);  // must go via close_conn — idle_timer may be active
             return;
         }
@@ -2302,7 +2268,6 @@ static void on_connection(uv_stream_t* server, int status) {
     conn->client.data = conn;
 
     if(uv_accept(server, (uv_stream_t*)&conn->client) != 0) {
-        // idle_timer not yet initialised — safe to delete directly
         uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){ delete static_cast<Conn*>(h->data); });
         return;
     }
@@ -2325,7 +2290,6 @@ static void on_connection(uv_stream_t* server, int status) {
         if(g_conn_count[conn->client_ip] >= g_max_conns_per_ip) {
             NW_DEBUG("connlimit", "IP %s over limit (%d)", conn->client_ip.c_str(), g_max_conns_per_ip);
             g_stat_err.fetch_add(1, std::memory_order_relaxed);
-            // idle_timer not yet initialised — safe to delete directly
             uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
                 delete static_cast<Conn*>(h->data); });
             return;
@@ -2338,7 +2302,6 @@ static void on_connection(uv_stream_t* server, int status) {
         std::lock_guard<std::mutex> lk(g_blacklist_mu);
         if(g_blacklist.count(conn->client_ip)){
             NW_DEBUG("blacklist","Early drop banned IP: %s", conn->client_ip.c_str());
-            // idle_timer not yet initialised — safe to delete directly
             uv_close((uv_handle_t*)&conn->client,[](uv_handle_t* h){
                 delete static_cast<Conn*>(h->data);});
             return;
@@ -2433,15 +2396,11 @@ static void run_worker(Worker* w, int wfd, std::atomic<int>& ready) {
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
-// Async-signal-safe signal handlers (lambdas with captures are not signal-safe)
-static void handle_sighup(int)  { g_reload.store(true); }
-static void handle_sigterm(int) { g_running.store(false); }
-
 int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGHUP,  handle_sighup);
-    signal(SIGTERM, handle_sigterm);
-    signal(SIGINT,  handle_sigterm);
+    signal(SIGHUP,  [](int){ g_reload.store(true); });
+    signal(SIGTERM, [](int){ g_running.store(false); });
+    signal(SIGINT,  [](int){ g_running.store(false); });
 
     fprintf(stderr,
         "\xE2\x95\x94\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90"
@@ -2638,6 +2597,7 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> lk(g_blacklist_mu);
             g_blacklist.insert(ip);
         }
+        g_db.blacklist_add(ip);  // persist immediately to SQLite
         audit("autoban", "autoban", ip + " — " + reason);
         NW_WARN("autoban", "BANNED %s — %s", ip.c_str(), reason.c_str());
     };
@@ -2646,6 +2606,23 @@ int main(int argc, char** argv) {
     // ── Load persistent blacklist ─────────────────────────────────────────────
     if(g_config && !g_config->blacklist_file.empty())
         g_blacklist_file = g_config->blacklist_file;
+    // Open SQLite database — path is sibling to blacklist_file
+    {
+        std::string db_dir = "/var/lib/nas-web";
+        if(!g_blacklist_file.empty()) {
+            auto p = std::filesystem::path(g_blacklist_file).parent_path();
+            if(!p.empty()) db_dir = p.string();
+        }
+        std::string db_path = db_dir + "/nas-web.db";
+        if(g_db.open(db_path)) {
+            NW_INFO("db", "SQLite opened: %s", db_path.c_str());
+            // One-time migration from legacy .txt files
+            g_db.migrate_from_txt(g_blacklist_file,
+                                  db_dir + "/recent_bans.txt");
+        } else {
+            NW_WARN("db", "SQLite open failed: %s — falling back to .txt", db_path.c_str());
+        }
+    }
     blacklist_load();
     bans_load();
 
@@ -2657,8 +2634,7 @@ int main(int argc, char** argv) {
             stats_collector_tick();
             if(++flush_counter >= 5){
                 flush_counter = 0;
-                if(g_blacklist_dirty.load(std::memory_order_relaxed))
-                    blacklist_flush_sync();
+                blacklist_flush_sync();  // SQLite WAL — tani, bez potrzeby dirty flag
             }
             // Sleep in short intervals to react to shutdown quickly
             for(int i=0; i<10 && g_stats_timer_running.load(); i++)
@@ -2679,7 +2655,7 @@ int main(int argc, char** argv) {
         {
             std::lock_guard<std::mutex> lk(g_blacklist_mu);
             g_blacklist.insert(ip);
-            blacklist_save_nolock(); // already holding mutex — no recursive lock
+            g_db.blacklist_add(ip); // persist immediately to SQLite
         }
         audit("waf_regex", "waf_regex_block", ip + " — " + reason);
         NW_WARN("waf_regex", "BLOCKED %s — %s", ip.c_str(), reason.c_str());
@@ -2706,7 +2682,7 @@ int main(int argc, char** argv) {
         {
             std::lock_guard<std::mutex> lk(g_blacklist_mu);
             g_blacklist.insert(ip);
-            blacklist_save_nolock(); // already holding mutex — no recursive lock
+            g_db.blacklist_add(ip); // persist immediately to SQLite
         }
         audit("waf", "waf_block", ip + " — " + reason);
         NW_WARN("waf", "BLOCKED %s — %s", ip.c_str(), reason.c_str());
@@ -2840,9 +2816,8 @@ int main(int argc, char** argv) {
     // Join worker threads
     for(auto& t : threads)
         if(t.joinable()) t.join();
-    // Final blacklist flush on clean shutdown
-    if(g_blacklist_dirty.load())
-        blacklist_flush_sync();
+    // Final ban events flush on clean shutdown
+    blacklist_flush_sync();
     NW_INFO("server", "Shutdown complete");
     return 0;
 }

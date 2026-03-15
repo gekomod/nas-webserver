@@ -47,9 +47,61 @@ extern "C" {
 #include <lualib.h>
 }
 #define LUA_RUNTIME "lua5.4"
+
+// ── lua-cjson (vendored) ──────────────────────────────────────────────────────
+#ifdef HAVE_LUA_CJSON
+extern "C" {
+// lua_cjson.c exposes luaopen_cjson — declare it here to avoid pulling
+// in the full header (which expects Lua internals already included above)
+int luaopen_cjson(lua_State* L);
+int luaopen_cjson_safe(lua_State* L);
+}
+#define CJSON_AVAILABLE 1
+#else
+// Stub: register a minimal cjson table so require("cjson") doesn't crash
+#include "../../vendor/lua-cjson/lua_cjson_stub.h"
+#define CJSON_AVAILABLE 0
+#endif
+
 #else
 #define LUA_RUNTIME "lua-stub"
 #endif
+
+#ifdef HAVE_LUA
+// ── np.base64_decode — defined outside class to avoid lua_pushcfunction macro issues
+static int np_base64_decode(lua_State* l) {
+    size_t len = 0;
+    const char* s = luaL_checklstring(l, 1, &len);
+    static const int8_t T[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+    };
+    std::string out; out.reserve((len * 3) / 4 + 4);
+    int acc = 0, bits = 0;
+    for (size_t i = 0; i < len; i++) {
+        int8_t v = T[(unsigned char)s[i]];
+        if (v < 0) continue;
+        acc = (acc << 6) | v; bits += 6;
+        if (bits >= 8) { bits -= 8; out += (char)((acc >> bits) & 0xff); }
+    }
+    lua_pushlstring(l, out.data(), out.size());
+    return 1;
+}
+#endif // HAVE_LUA
 
 struct LuaResult {
     enum class Action { Pass, Block, Modify } action{Action::Pass};
@@ -70,6 +122,8 @@ public:
         luaopen_string(L);
         luaopen_table(L);
         luaopen_math(L);
+        luaopen_package(L);   // needed for require() and package.preload
+        register_cjson();
         register_np_api();
     }
 
@@ -233,6 +287,34 @@ private:
         return r;
     }
 
+    // ── cjson registration ───────────────────────────────────────────────────
+    void register_cjson() {
+#if CJSON_AVAILABLE
+        // Register cjson via luaL_requiref — safe, works without package lib
+        luaL_requiref(L, "cjson",      luaopen_cjson,      1); lua_pop(L, 1);
+        luaL_requiref(L, "cjson.safe", luaopen_cjson_safe, 1); lua_pop(L, 1);
+
+        // Also register in package.preload if package lib is available
+        lua_getglobal(L, "package");
+        if(lua_istable(L, -1)) {
+            lua_getfield(L, -1, "preload");
+            if(lua_istable(L, -1)) {
+                lua_pushcfunction(L, luaopen_cjson_safe);
+                lua_setfield(L, -2, "cjson");
+                lua_pushcfunction(L, luaopen_cjson_safe);
+                lua_setfield(L, -2, "cjson.safe");
+            }
+            lua_pop(L, 1); // preload
+        }
+        lua_pop(L, 1); // package
+        fprintf(stderr, "[lua] cjson loaded (vendored lua-cjson)\n");
+#else
+        // Register stub so require("cjson") returns a working (limited) table
+        register_cjson_stub(L);
+        fprintf(stderr, "[lua] cjson stub loaded (run vendor/lua-cjson/fetch_lua_cjson.sh for full support)\n");
+#endif
+    }
+
     // ── np.* API ──────────────────────────────────────────────────────────────
     void register_np_api(){
         lua_newtable(L);
@@ -262,6 +344,10 @@ private:
             return 1;
         });
         lua_setfield(L,-2,"hash");
+
+        // np.base64_decode(str) → string
+        lua_pushcfunction(L, np_base64_decode);
+        lua_setfield(L,-2,"base64_decode");
 
         lua_setglobal(L,"np");
     }

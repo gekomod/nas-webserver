@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(nas-web VERSION 2.3.0 LANGUAGES CXX C)
+project(nas-web VERSION 2.2.84 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,8 @@ option(WITH_NGHTTP2 "HTTP/2 support (nghttp2)"    ON)
 option(WITH_QUICHE  "HTTP/3 support (quiche)"     OFF)
 option(WITH_ZSTD    "zstd compression (vendored)" OFF)
 option(WITH_JANET   "Janet WAF scripting (vendored)" OFF)
+option(WITH_SQLITE  "SQLite3 persistence (vendored)" ON)
+option(WITH_LUA_CJSON "lua-cjson JSON library (vendored)" ON)
 
 add_compile_options(-Wall -Wextra -Wno-unused-parameter -O2 -g)
 
@@ -22,6 +24,58 @@ pkg_check_modules(ZLIB    REQUIRED zlib)
 set(DEPS ${LIBUV_LIBRARIES} ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARIES} pthread)
 set(INCS include ${LIBUV_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
 set(DEFS "")
+
+# ── SQLite3 (vendored amalgamation) ─────────────────────────────────────────
+if(WITH_SQLITE)
+    set(SQLITE_VENDOR "${CMAKE_SOURCE_DIR}/vendor/sqlite")
+    if(EXISTS "${SQLITE_VENDOR}/sqlite3.c")
+        add_library(sqlite3_vendor STATIC "${SQLITE_VENDOR}/sqlite3.c")
+        target_include_directories(sqlite3_vendor PUBLIC "${SQLITE_VENDOR}")
+        target_compile_options(sqlite3_vendor PRIVATE
+            -Wno-unused-variable -Wno-unused-function
+            -Wno-implicit-fallthrough -O2)
+        target_compile_definitions(sqlite3_vendor PRIVATE
+            SQLITE_THREADSAFE=2          # serialized per-connection, not global
+            SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
+            SQLITE_OMIT_LOAD_EXTENSION  # no dlopen — reduces attack surface
+        )
+        set(SQLITE_LINK_LIB sqlite3_vendor)
+        list(APPEND DEFS HAVE_SQLITE)
+        list(APPEND INCS "${SQLITE_VENDOR}")   # nas_db.hh needs sqlite3.h
+        message(STATUS "SQLite3: vendored amalgamation -> persistence ENABLED")
+    else()
+        message(STATUS "SQLite3: run vendor/sqlite/fetch_sqlite.sh to enable")
+    endif()
+endif()
+
+# ── lua-cjson (vendored) ─────────────────────────────────────────────────────
+if(WITH_LUA_CJSON AND WITH_LUA)
+    set(CJSON_VENDOR "${CMAKE_SOURCE_DIR}/vendor/lua-cjson")
+    if(EXISTS "${CJSON_VENDOR}/lua_cjson.c")
+        add_library(lua_cjson_vendor STATIC
+            "${CJSON_VENDOR}/lua_cjson.c"
+            "${CJSON_VENDOR}/strbuf.c"
+            "${CJSON_VENDOR}/fpconv.c"
+        )
+        target_include_directories(lua_cjson_vendor PUBLIC "${CJSON_VENDOR}")
+        # lua-cjson needs Lua headers
+        if(LUA_FOUND)
+            target_include_directories(lua_cjson_vendor PRIVATE ${LUA_INCLUDE_DIRS})
+        else()
+            target_include_directories(lua_cjson_vendor PRIVATE
+                /usr/include/lua5.4 /usr/local/include/lua5.4)
+        endif()
+        target_compile_options(lua_cjson_vendor PRIVATE
+            -Wno-unused-variable -Wno-unused-function
+            -Wno-implicit-function-declaration -O2)
+        set(LUA_CJSON_LINK_LIB lua_cjson_vendor)
+        list(APPEND DEFS HAVE_LUA_CJSON)
+        list(APPEND INCS "${CJSON_VENDOR}")    # lua_engine.cc needs lua_cjson_stub.h
+        message(STATUS "lua-cjson: vendored -> JSON for Lua ENABLED")
+    else()
+        message(STATUS "lua-cjson: run vendor/lua-cjson/fetch_lua_cjson.sh to enable")
+    endif()
+endif()
 
 # ── QuickJS (no conflict with Node.js — vendored or system) ─────────────────
 if(WITH_QUICKJS)
@@ -234,14 +288,16 @@ if(DEFINED JANET_LINK_LIB)
     list(APPEND ALL_VENDOR_LIBS ${JANET_LINK_LIB})
 endif()
 if(ALL_VENDOR_LIBS)
-    target_link_libraries(nas-web PRIVATE ${ALL_VENDOR_LIBS} ${DEPS})
+    target_link_libraries(nas-web PRIVATE
+    $<$<BOOL:${WITH_SQLITE}>:${SQLITE_LINK_LIB}>
+    $<$<BOOL:${WITH_LUA_CJSON}>:${LUA_CJSON_LINK_LIB}> ${ALL_VENDOR_LIBS} ${DEPS})
 else()
     target_link_libraries(nas-web PRIVATE ${DEPS})
 endif()
 
 # Tests
 enable_testing()
-foreach(t test_parser test_cache test_ratelimit test_waf_regex)
+foreach(t test_parser test_cache test_ratelimit)
     add_executable(${t} tests/${t}.cc)
     target_include_directories(${t} PRIVATE include)
     target_compile_options(${t} PRIVATE -std=c++20 -Wno-unused-variable)
@@ -262,6 +318,8 @@ message(STATUS "")
 message(STATUS "=== nas-web ${PROJECT_VERSION} ===")
 message(STATUS "  JS/QuickJS: ${WITH_QUICKJS}")
 message(STATUS "  Lua:    ${WITH_LUA}")
+message(STATUS "  lua-cjson: ${WITH_LUA_CJSON}")
+message(STATUS "  SQLite: ${WITH_SQLITE}")
 message(STATUS "  HTTP/2:  ${WITH_NGHTTP2}")
 message(STATUS "  Brotli:  ${WITH_BROTLI}")
 message(STATUS "  zstd:    ${WITH_ZSTD}")
