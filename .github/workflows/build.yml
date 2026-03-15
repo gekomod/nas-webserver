@@ -1,88 +1,147 @@
-name: CodeQL
+name: Build .deb package
 
 on:
   push:
     branches: [ main, master, dev ]
   pull_request:
     branches: [ main, master ]
-  schedule:
-    - cron: '0 4 * * 1'   # co poniedziałek 04:00 UTC
 
 jobs:
-  analyze:
-    name: Analyze (C/C++)
+  build-deb:
+    name: Build nas-web .deb (${{ matrix.variant }})
     runs-on: ubuntu-24.04
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Wariant minimalny — zawsze budowany, najszybszy
+          - variant: minimal
+            with_modsec: OFF
+            with_zstd:   OFF
+            with_janet:  OFF
+            with_sqlite: ON
+            with_lua_cjson: ON
+
+          # Wariant pełny — wszystkie moduły
+          - variant: full
+            with_modsec: ON
+            with_zstd:   ON
+            with_janet:  ON
+            with_sqlite: ON
+            with_lua_cjson: ON
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      # Cache apt packages — przyspiesza kolejne runy
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ matrix.variant }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: apt-${{ runner.os }}-
+
+      - name: Install base build deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake pkg-config \
-            libuv1-dev libssl-dev zlib1g-dev \
-            libbrotli-dev libnghttp2-dev \
-            liblua5.4-dev
+            build-essential \
+            cmake \
+            pkg-config \
+            dpkg-dev \
+            git \
+            ca-certificates \
+            curl \
+            libuv1-dev \
+            libssl-dev \
+            libbrotli-dev \
+            libnghttp2-dev \
+            liblua5.4-dev \
+            zlib1g-dev
 
-      # Fetch vendory których CodeQL potrzebuje do buildu
-      # (sqlite i lua-cjson są włączone w Configure poniżej)
+      - name: Install ModSecurity deps
+        if: matrix.with_modsec == 'ON'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libmodsecurity-dev \
+            libpcre2-dev \
+            libxml2-dev \
+            libyajl-dev \
+            libcurl4-openssl-dev
+
       - name: Fetch vendors
         run: |
-          if [ -f vendor/quickjs/fetch_quickjs.sh ]; then
-            bash vendor/quickjs/fetch_quickjs.sh
-          fi
-          if [ -f vendor/sqlite/fetch_sqlite.sh ]; then
+          # SQLite3 amalgamation
+          if [ "${{ matrix.with_sqlite }}" = "ON" ] && [ -f "vendor/sqlite/fetch_sqlite.sh" ]; then
             bash vendor/sqlite/fetch_sqlite.sh
           fi
-          if [ -f vendor/lua-cjson/fetch_lua_cjson.sh ]; then
+          # lua-cjson
+          if [ "${{ matrix.with_lua_cjson }}" = "ON" ] && [ -f "vendor/lua-cjson/fetch_lua_cjson.sh" ]; then
             bash vendor/lua-cjson/fetch_lua_cjson.sh
           fi
+          # QuickJS
+          if [ -f "vendor/quickjs/fetch_quickjs.sh" ]; then
+            bash vendor/quickjs/fetch_quickjs.sh
+          fi
+          # zstd (vendored — nie używaj libzstd-dev)
+          if [ "${{ matrix.with_zstd }}" = "ON" ] && [ -f "vendor/zstd/fetch_zstd.sh" ]; then
+            bash vendor/zstd/fetch_zstd.sh
+          fi
+          # Janet
+          if [ "${{ matrix.with_janet }}" = "ON" ] && [ -f "vendor/janet/fetch_janet.sh" ]; then
+            bash vendor/janet/fetch_janet.sh
+          fi
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: c-cpp
-          queries: security-extended,security-and-quality
-          # build-mode: manual — bo używamy własnego cmake/make
-          build-mode: manual
-          config: |
-            paths-ignore:
-              - vendor/quickjs
-              - vendor/zstd
-              - vendor/janet
-              - vendor/cssmin
-              - vendor/lua-cjson
-              - vendor/sqlite
-
-      - name: Configure
+      - name: Extract version from changelog
+        id: version
         run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DWITH_LUA=ON \
-            -DWITH_QUICKJS=ON \
-            -DWITH_NGHTTP2=ON \
-            -DWITH_BROTLI=ON \
-            -DWITH_ACME=ON \
-            -DWITH_ZSTD=OFF \
-            -DWITH_JANET=OFF \
-            -DWITH_MODSEC=OFF \
-            -DWITH_QUICHE=OFF \
-            -DWITH_SQLITE=ON \
-            -DWITH_LUA_CJSON=ON
+          VERSION=$(head -1 debian/changelog | grep -oP '\(\K[^)]+' | head -1)
+          UPSTREAM=$(echo "$VERSION" | sed 's/-[0-9]*$//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
 
-      - name: Build
-        run: cmake --build build --parallel $(nproc)
+      - name: Build .deb
+        run: |
+          ARGS=""
+          [ "${{ matrix.with_modsec }}"    = "ON" ] && ARGS="$ARGS --with-modsec"
+          [ "${{ matrix.with_zstd }}"      = "ON" ] && ARGS="$ARGS --with-zstd"
+          [ "${{ matrix.with_janet }}"     = "ON" ] && ARGS="$ARGS --with-janet"
+          [ "${{ matrix.with_sqlite }}"    = "OFF" ] && ARGS="$ARGS --no-sqlite"
+          [ "${{ matrix.with_lua_cjson }}" = "OFF" ] && ARGS="$ARGS --no-lua-cjson"
+          echo "Running: bash build-deb.sh $ARGS"
+          bash build-deb.sh $ARGS
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+      - name: Rename .deb with variant suffix
+        id: rename
+        run: |
+          ORIGINAL=$(ls *.deb 2>/dev/null | head -1)
+          if [ -z "$ORIGINAL" ]; then
+            echo "ERROR: No .deb file found" >&2
+            exit 1
+          fi
+          NEW="nas-web-${{ steps.version.outputs.version }}-${{ matrix.variant }}.deb"
+          mv "$ORIGINAL" "$NEW"
+          echo "deb_name=$NEW" >> $GITHUB_OUTPUT
+          echo "Renamed: $ORIGINAL -> $NEW"
+          ls -lh "$NEW"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
         with:
-          category: /language:c-cpp
-          # Zapisz wyniki SARIF jako artifact dla łatwiejszego debugowania
-          output: results
-          upload: always
+          name: nas-web-${{ steps.version.outputs.version }}-${{ matrix.variant }}
+          path: ${{ steps.rename.outputs.deb_name }}
+          retention-days: 14
+
+      - name: Verify .deb metadata
+        run: |
+          DEB="${{ steps.rename.outputs.deb_name }}"
+          echo "=== Package info ==="
+          dpkg-deb --info "$DEB"
+          echo ""
+          echo "=== Contents ==="
+          dpkg-deb --contents "$DEB"
+          echo ""
+          echo "=== Runtime deps ==="
+          dpkg-deb --field "$DEB" Depends
