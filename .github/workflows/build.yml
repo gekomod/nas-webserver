@@ -16,6 +16,8 @@ jobs:
         with_modsec: [ON, OFF]
         with_zstd: [ON, OFF]
         with_janet: [ON, OFF]
+        with_sqlite: [ON, OFF]
+        with_lua_cjson: [ON, OFF]
 
     steps:
       - uses: actions/checkout@v4
@@ -61,10 +63,12 @@ jobs:
 
       - name: Run build-deb.sh
         run: |
-          ARGS=""
+          ARGS="" bash build-deb.sh --with-modsec --with-zstd --with-janet --with-sqlite --with-lua-cjson
           if [ "${{ matrix.with_modsec }}" = "ON" ]; then ARGS="$ARGS --with-modsec"; fi
           if [ "${{ matrix.with_zstd }}" = "ON" ]; then ARGS="$ARGS --with-zstd"; fi
           if [ "${{ matrix.with_janet }}" = "ON" ]; then ARGS="$ARGS --with-janet"; fi
+          if [ "${{ matrix.with_sqlite }}" = "ON" ]; then ARGS="$ARGS --with-sqlite"; fi
+          if [ "${{ matrix.with_lua_cjson }}" = "ON" ]; then ARGS="$ARGS --with-lua-cjson"; fi
           bash build-deb.sh $ARGS
 
       - name: Rename .deb package with version
@@ -73,12 +77,14 @@ jobs:
           MODSEC="${{ matrix.with_modsec }}"
           ZSTD="${{ matrix.with_zstd }}"
           JANET="${{ matrix.with_janet }}"
+          SQLITE="${{ matrix.with_sqlite }}"
+          LUACJSON="${{ matrix.with_lua_cjson }}"
           
           # Znajdź wygenerowany plik .deb
           ORIGINAL_DEB=$(ls *.deb | head -1)
           
           if [ -n "$ORIGINAL_DEB" ]; then
-            NEW_NAME="nas-web-${VERSION}-modsec${MODSEC}-zstd${ZSTD}-janet${JANET}.deb"
+            NEW_NAME="nas-web-${VERSION}-modsec${MODSEC}-zstd${ZSTD}-janet${JANET}-sqlite${SQLITE}-luacjson${LUACJSON}.deb"
             mv "$ORIGINAL_DEB" "$NEW_NAME"
             echo "Renamed: $ORIGINAL_DEB -> $NEW_NAME"
             echo "deb_name=$NEW_NAME" >> $GITHUB_OUTPUT
