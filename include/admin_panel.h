@@ -483,6 +483,9 @@ body.nav-open #nav-overlay { display: block; }
   <div class="nav-item" onclick="show('waf',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0L1 3v5c0 4.1 3 7.9 7 9 4-1.1 7-4.9 7-9V3L8 0zm0 2l5 2.2V8c0 2.8-2.2 5.3-5 6.3C5.2 13.3 3 10.8 3 8V4.2L8 2z"/></svg>WAF ModSec
   </div>
+  <div class="nav-item" id="nav-db" style="display:none" onclick="show('db',this)">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2C4.69 2 2 3.12 2 4.5S4.69 7 8 7s6-1.12 6-2.5S11.31 2 8 2zM2 6.5v2C2 9.88 4.69 11 8 11s6-1.12 6-2.5v-2C14 7.88 11.31 9 8 9S2 7.88 2 6.5zM2 10.5v2C2 13.88 4.69 15 8 15s6-1.12 6-2.5v-2C14 11.88 11.31 13 8 13s-6-1.12-6-2.5z"/></svg>SQLite — Baza
+  </div>
 </nav>
 
 <div class="content">
@@ -739,6 +742,25 @@ server {
   domains example.com;
   staging off;
 }</code><span class="badge green">✓ gotowe</span></div>
+
+      <div class="mod-card"><div class="mod-title">🗄 SQLite3 Persistence</div>
+        <div class="mod-desc">Vendored SQLite3 (single-file amalgamation). Zastępuje blacklist.txt i recent_bans.txt — atomowe zapisy, WAL mode, indeksy. Migracja z plików .txt automatycznie przy pierwszym starcie.</div>
+        <code class="mod-cfg"># Baza automatycznie w:
+# /var/lib/nas-web/nas-web.db
+#
+# Build:
+bash vendor/sqlite/fetch_sqlite.sh
+build-deb.sh --with-sqlite</code><span class="badge green">✓ gotowe</span></div>
+
+      <div class="mod-card"><div class="mod-title">🔣 lua-cjson</div>
+        <div class="mod-desc">Szybki JSON encoder/decoder dla skryptów Lua (fork OpenResty). Dostępny jako <code>require("cjson")</code> w każdym skrypcie middleware. Obsługuje <code>cjson.safe</code> (nie rzuca błędów).</div>
+        <code class="mod-cfg">-- w skrypcie Lua:
+local cjson = require("cjson")
+local obj = cjson.decode(req.body)
+local out = cjson.encode({
+  status = "ok",
+  ip     = req.client_ip
+})</code><span class="badge green">✓ gotowe</span></div>
     </div>
 
     <!-- CONFIG EXAMPLES -->
@@ -880,6 +902,34 @@ local f = io.open("/var/log/nas-panel/access.log","a")
 if f then f:write(line); f:close() end</textarea>
         </div>
         <div>
+          <div style="font-size:11px;color:var(--dim);margin-bottom:6px">JSON API response (cjson)</div>
+          <textarea class="config-area" style="height:180px;font-size:11px" readonly>-- json_api.lua
+-- Wymaga: build-deb.sh --with-lua-cjson
+local cjson = require("cjson")
+
+function on_request(req)
+  if req.path ~= "/api/status" then return nil end
+  local body = cjson.encode({
+    status  = "ok",
+    version = "2.3.0",
+    ip      = req.client_ip,
+    ts      = np.time()
+  })
+  return { status=200, body=body,
+    headers={ ["Content-Type"]="application/json" } }
+end
+
+function on_response(req, resp)
+  local ok, obj = pcall(cjson.decode, resp.body)
+  if ok and type(obj) == "table" then
+    obj["x-processed"] = true
+    resp.body = cjson.encode(obj)
+  end
+  return resp
+end</textarea>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">Użycie: <code>lua_middleware /etc/nas-web/json_api.lua;</code></div>
+        </div>
+        <div>
           <div style="font-size:11px;color:var(--dim);margin-bottom:6px">Prometheus /metrics</div>
           <textarea class="config-area" style="height:140px;font-size:11px" readonly>-- metrics.lua
 -- location /metrics { lua_middleware ...; return 200; }
@@ -993,6 +1043,80 @@ response.body = table.concat(stats,"
   </div>
 
 </div>
+<div class="section" id="sec-db">
+  <div class="page-title"><h1>SQLite — Baza</h1><span class="sub">zarządzanie bazą danych</span></div>
+
+  <!-- Status bazy -->
+  <div class="panel">
+    <div class="panel-head">
+      <span class="panel-title">Status bazy</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost" style="font-size:11px" onclick="loadDb()">↺ Odśwież</button>
+      </div>
+    </div>
+    <div id="db-status-grid" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+      <div style="color:var(--dim);font-size:11px">Ładowanie...</div>
+    </div>
+  </div>
+
+  <!-- Tabele -->
+  <div class="panel" style="margin-top:16px">
+    <div class="panel-head"><span class="panel-title">Tabele</span></div>
+    <div id="db-tables" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+    </div>
+  </div>
+
+  <!-- Operacje -->
+  <div class="panel" style="margin-top:16px">
+    <div class="panel-head"><span class="panel-title">Operacje</span></div>
+    <div style="padding:16px;display:flex;flex-wrap:wrap;gap:12px">
+
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:16px;flex:1;min-width:200px">
+        <div style="font-size:13px;font-weight:600;color:var(--bright);margin-bottom:6px">🔧 VACUUM</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">Defragmentuje bazę i odzyskuje wolne miejsce. Bezpieczna operacja, może chwilę potrwać.</div>
+        <button class="btn btn-ghost" style="font-size:11px" onclick="dbAction('vacuum')">Uruchom VACUUM</button>
+      </div>
+
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:16px;flex:1;min-width:200px">
+        <div style="font-size:13px;font-weight:600;color:var(--bright);margin-bottom:6px">💾 WAL Checkpoint</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">Zapisuje bufor WAL do głównego pliku bazy. Zmniejsza rozmiar pliku <code>-wal</code>.</div>
+        <button class="btn btn-ghost" style="font-size:11px" onclick="dbAction('wal_checkpoint')">Checkpoint</button>
+      </div>
+
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:16px;flex:1;min-width:200px">
+        <div style="font-size:13px;font-weight:600;color:var(--bright);margin-bottom:6px">🔍 Sprawdź integralność</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">Szybki quick_check integralności struktury bazy danych.</div>
+        <button class="btn btn-ghost" style="font-size:11px" onclick="dbAction('integrity_check')">Quick check</button>
+      </div>
+
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:16px;flex:1;min-width:200px">
+        <div style="font-size:13px;font-weight:600;color:var(--bright);margin-bottom:6px">🗑 Wyczyść ban events</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">Usuwa stare zdarzenia banowania (starsze niż 30 dni). Nie usuwa blacklisty.</div>
+        <button class="btn" style="font-size:11px;background:rgba(255,51,85,.15);color:#ff3355;border:1px solid rgba(255,51,85,.3)" onclick="dbPruneEvents()">Wyczyść stare eventy</button>
+      </div>
+
+    </div>
+    <div id="db-action-result" style="display:none;margin:0 16px 16px;padding:10px 14px;border-radius:6px;font-size:12px;font-family:monospace"></div>
+  </div>
+
+  <!-- Backup info -->
+  <div class="panel" style="margin-top:16px">
+    <div class="panel-head"><span class="panel-title">Backup</span></div>
+    <div style="padding:16px">
+      <div style="font-size:11px;color:var(--dim);line-height:1.8;margin-bottom:12px">
+        SQLite3 w trybie WAL — plik bazy jest bezpieczny do kopiowania bez zatrzymywania serwera.<br>
+        Pliki do skopiowania: <code id="db-path-backup">—</code> oraz <code id="db-wal-path">—</code>
+      </div>
+      <code style="display:block;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:10px 14px;font-size:11px;color:var(--dim)">
+# Backup bez zatrzymywania serwera:<br>
+cp /var/lib/nas-web/nas-web.db /backup/nas-web-$(date +%Y%m%d).db<br>
+# Lub przez sqlite3:<br>
+sqlite3 /var/lib/nas-web/nas-web.db ".backup /backup/nas-web.db"
+      </code>
+    </div>
+  </div>
+</div>
+
 <div class="section" id="sec-sysinfo">
   <div class="page-title"><h1>System Info</h1><span class="sub">server &amp; host details</span></div>
   <div class="sysinfo-grid" id="sysinfo-grid"></div>
@@ -1918,6 +2042,7 @@ function show(id,el){
   }
   if(id==='logs'){
     fetchServerLogs();
+    loadDb();  // sprawdź czy SQLite aktywne → pokaż nav item
     if(!window._logTimer) window._logTimer = setInterval(()=>{
       const active = document.getElementById('sec-logs');
       if(active && active.classList.contains('active')){
@@ -1934,6 +2059,8 @@ function show(id,el){
     }, 10000);
   } else if(id === 'audit'){
     loadAudit();
+  } else if(id === 'db'){
+    loadDb();
   } else if(id === 'autoban'){
     loadAutoban();
   } else if(id === 'waf'){
@@ -2220,6 +2347,8 @@ const MODULES=[
   {name:'Cache',ver:'built-in',status:'active',color:'blue',desc:'LRU response cache with TTL and RFC 7234 Cache-Control support. Configurable size and TTL.',tags:['lru','cache-control','ttl']},
   {name:'Rate Limiter',ver:'built-in',status:'active',color:'blue',desc:'Token bucket rate limiter per client IP. Configurable rate, burst, and window per location.',tags:['ratelimit','token-bucket','per-ip']},
   {name:'Static Handler',ver:'built-in',status:'active',color:'blue',desc:'Serves static files with gzip, ETag, Range, Last-Modified and SPA fallback to index.html.',tags:['static','gzip','etag','range','spa']},
+  {name:'SQLite3',ver:'3.45+',status:'loaded',color:'green',desc:'Vendored SQLite3 amalgamation — persistent storage for IP blacklist and ban events. Replaces blacklist.txt / recent_bans.txt. WAL mode, atomic writes.',tags:['sqlite','persistence','blacklist','bans','wal']},
+  {name:'lua-cjson',ver:'2.1.0',status:'loaded',color:'green',desc:'Fast JSON encoder/decoder for Lua scripts (OpenResty fork). Available as require("cjson") in all Lua middleware. Supports cjson.safe mode.',tags:['lua','json','cjson','middleware']},
 ];
 async function toggleFeature(id, enable) {
   const r = await api('/np_features', {method:'POST',
@@ -2239,7 +2368,8 @@ async function renderModules(){
   const ICONS = {
     cache:'💾', ratelimit:'🔒', gzip:'📦', lua:'🌙',
     js:'⚡', tls:'🔐', h2:'🚀', healthcheck:'💓', acme:'🔑',
-    waf_regex:'🔍', waf_modsec:'🛡', autoban:'🚫', default:'🔧'
+    waf_regex:'🔍', waf_modsec:'🛡', autoban:'🚫',
+    sqlite:'🗄', 'lua-cjson':'🔣', default:'🔧'
   };
 
   // Pobierz stan WAF i wstaw jako wirtualne moduły
@@ -2314,6 +2444,10 @@ async function renderModules(){
                         : '\u2699 W\u0142\u0105cz: build-deb.sh --with-zstd',
         'janet':     on ? '\u2713 Regu\u0142y WAF z plików .janet w /etc/nas-web/scripts/'
                         : '\u2699 W\u0142\u0105cz: build-deb.sh --with-janet',
+        'sqlite':    on ? '\u2713 Aktywny — /var/lib/nas-web/nas-web.db (WAL mode)'
+                        : '\u2699 W\u0142\u0105cz: build-deb.sh --with-sqlite (domy\u015blnie ON)',
+        'lua-cjson': on ? '\u2713 Aktywny — require(\"cjson\") dost\u0119pne w Lua middleware'
+                        : '\u2699 W\u0142\u0105cz: build-deb.sh --with-lua-cjson (domy\u015blnie ON)',
         'optimizer': '\u2713 Automatyczny — CSS minify, HTML lazy-img, charset',
         'tls':       on ? '\u2713 Certyfikat za\u0142adowany — konfiguracja w nas-web.conf'
                         : '\u2699 Dodaj ssl_cert i ssl_key w nas-web.conf',
@@ -2548,6 +2682,88 @@ function filterAudit() {
     const txt = (r.dataset.action + r.dataset.ip + r.dataset.detail).toLowerCase();
     r.style.display = (!search || txt.includes(search)) ? '' : 'none';
   });
+}
+
+// ── SQLite Database ──────────────────────────────────────────────────────────
+async function loadDb() {
+  const data = await api('/np_db');
+  if(!data) return;
+
+  // Pokaż/ukryj nav item zależnie od tego czy SQLite jest włączony
+  const navDb = document.getElementById('nav-db');
+  if(navDb) navDb.style.display = data.enabled ? '' : 'none';
+  if(!data.enabled) return;
+
+  // Status grid
+  const grid = document.getElementById('db-status-grid');
+  if(grid) {
+    const fmt = n => n >= 1024*1024 ? (n/1024/1024).toFixed(1)+' MB'
+                   : n >= 1024 ? (n/1024).toFixed(1)+' KB' : n+' B';
+    grid.innerHTML = [
+      ['📁 Plik', `<span style="font-family:monospace;font-size:10px">${data.path||'—'}</span>`],
+      ['💾 Rozmiar', fmt(data.size_bytes||0)],
+      ['📋 Journal', `<span class="badge green">${data.journal_mode||'wal'}</span>`],
+      ['🔍 Integralność', `<span class="badge ${data.integrity==='ok'?'green':'orange'}">${data.integrity||'—'}</span>`],
+      ['📄 Page size', (data.page_size||4096)+' B'],
+      ['📊 Pages', data.page_count||0],
+    ].map(([k,v]) => `
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px">
+        <div style="font-size:10px;color:var(--dim);margin-bottom:4px">${k}</div>
+        <div style="font-size:13px;font-weight:600;color:var(--bright)">${v}</div>
+      </div>`).join('');
+  }
+
+  // Tabele
+  const tbls = document.getElementById('db-tables');
+  if(tbls && data.tables) {
+    const TABLE_DESC = {
+      blacklist:   {icon:'🚫', desc:'Zbanowane adresy IP'},
+      ban_events:  {icon:'📋', desc:'Historia zdarzeń banowania'},
+      migrations:  {icon:'🔄', desc:'Historia migracji bazy'},
+    };
+    tbls.innerHTML = Object.entries(data.tables).map(([name, info]) => {
+      const d = TABLE_DESC[name] || {icon:'🗃', desc:name};
+      return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:14px;font-weight:600;color:var(--bright);margin-bottom:4px">${d.icon} ${name}</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px">${d.desc}</div>
+        <div style="font-size:24px;font-weight:700;color:var(--accent)">${info.rows}</div>
+        <div style="font-size:10px;color:var(--dim)">wierszy</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Backup paths
+  const p = data.path || '';
+  const pathEl = document.getElementById('db-path-backup');
+  const walEl  = document.getElementById('db-wal-path');
+  if(pathEl) pathEl.textContent = p;
+  if(walEl)  walEl.textContent  = p ? p+'-wal' : '—';
+}
+
+async function dbAction(action) {
+  const res = document.getElementById('db-action-result');
+  if(res) { res.style.display='block'; res.style.background='rgba(0,136,255,.1)'; res.style.border='1px solid rgba(0,136,255,.3)'; res.textContent='Wykonywanie...'; }
+  const data = await api('/np_db?action='+action, {method:'POST'});
+  if(res && data) {
+    const ok = data.result && !data.result.includes('error');
+    res.style.background = ok ? 'rgba(0,212,170,.1)' : 'rgba(255,51,85,.1)';
+    res.style.border = ok ? '1px solid rgba(0,212,170,.3)' : '1px solid rgba(255,51,85,.3)';
+    res.textContent = '✓ ' + (data.result || JSON.stringify(data));
+  }
+  setTimeout(loadDb, 500);
+}
+
+async function dbPruneEvents() {
+  if(!confirm('Usunąć zdarzenia banowania starsze niż 30 dni?')) return;
+  const data = await api('/np_db?action=prune_events', {method:'POST'});
+  const res = document.getElementById('db-action-result');
+  if(res && data) {
+    res.style.display='block';
+    res.style.background='rgba(0,212,170,.1)';
+    res.style.border='1px solid rgba(0,212,170,.3)';
+    res.textContent = '✓ ' + (data.result || 'Wykonano');
+  }
+  setTimeout(loadDb, 500);
 }
 
 // ── SSE Live Log ──────────────────────────────────────────────────────────────

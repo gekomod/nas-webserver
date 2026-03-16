@@ -294,6 +294,41 @@ struct NasDb {
         fprintf(stderr, "[nas_db] Migration complete — txt files will no longer be imported\n");
     }
 
+    // ── Public helpers for /np_db endpoint ──────────────────────────────────
+    void exec_public(const char* sql) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if(db_) exec(sql);
+    }
+
+    std::vector<std::string> query_public(const char* sql) {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::vector<std::string> result;
+        if(!db_) return result;
+        sqlite3_stmt* st = prepare(sql);
+        if(!st) return result;
+        while(sqlite3_step(st) == SQLITE_ROW) {
+            const char* v = (const char*)sqlite3_column_text(st, 0);
+            result.push_back(v ? v : "");
+        }
+        sqlite3_finalize(st);
+        return result;
+    }
+
+    size_t count_public(const std::string& table) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if(!db_) return 0;
+        std::string sql = "SELECT COUNT(*) FROM " + table;
+        sqlite3_stmt* st = prepare(sql.c_str());
+        if(!st) return 0;
+        size_t n = 0;
+        if(sqlite3_step(st) == SQLITE_ROW)
+            n = (size_t)sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+        return n;
+    }
+
+    std::string path_public() const { return db_path_; }
+
 private:
     sqlite3*   db_{nullptr};
     std::mutex mu_;

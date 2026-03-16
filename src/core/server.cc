@@ -5,6 +5,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -798,7 +799,8 @@ static void dispatch(Conn* conn) {
                rpath == "/np_acme_diag"  || rpath == "/np_logs/stream" ||
                rpath == "/np_autoban" ||
                rpath == "/np_waf" ||
-               rpath == "/np_waf_regex";
+               rpath == "/np_waf_regex" ||
+               rpath == "/np_db";
     };
 
     if(is_admin_path()) {
@@ -1882,6 +1884,103 @@ static void dispatch(Conn* conn) {
         Response r; r.status=204;
         r.headers.set("Content-Length","0");
         write_response(conn, r.serialize_h1()); return;
+    }
+
+    // ── /np_db — SQLite database info, backup, vacuum ───────────────────────────
+    if(rpath == "/np_db") {
+#ifdef HAVE_SQLITE
+        if(conn->req.method == Method::POST) {
+            // POST z action=vacuum|wal_checkpoint|backup
+            std::string action;
+            // parse action z body lub query
+            auto& q = conn->req.query;
+            auto& b = conn->req.body;
+            auto find_param = [](const std::string& s, const std::string& key) -> std::string {
+                auto p = s.find(key + "=");
+                if(p == std::string::npos) return "";
+                auto e = s.find('&', p);
+                return s.substr(p + key.size() + 1,
+                    e == std::string::npos ? std::string::npos : e - p - key.size() - 1);
+            };
+            action = find_param(q, "action");
+            if(action.empty()) action = find_param(b, "action");
+
+            std::string result_msg;
+            if(action == "vacuum") {
+                g_db.exec_public("VACUUM");
+                result_msg = "VACUUM completed";
+            } else if(action == "wal_checkpoint") {
+                g_db.exec_public("PRAGMA wal_checkpoint(TRUNCATE)");
+                result_msg = "WAL checkpoint completed";
+            } else if(action == "integrity_check") {
+                auto res = g_db.query_public("PRAGMA integrity_check");
+                result_msg = res.empty() ? "ok" : res[0];
+            } else if(action == "prune_events") {
+                // Usuń ban_events starsze niż 30 dni
+                time_t cutoff = time(nullptr) - 30*24*3600;
+                std::string sql = "DELETE FROM ban_events WHERE ts < " + std::to_string(cutoff);
+                g_db.exec_public(sql.c_str());
+                auto cnt = g_db.count_public("ban_events");
+                result_msg = "Pruned old events, " + std::to_string(cnt) + " remaining";
+            } else {
+                result_msg = "unknown action";
+            }
+            std::string j = "{\"result\":\"" + result_msg + "\"}";
+            Response r; r.status=200;
+            r.headers.set("Content-Type","application/json");
+            r.headers.set("Content-Length",std::to_string(j.size()));
+            r.headers.set("Cache-Control","no-cache");
+            r.body=j; write_response(conn,r.serialize_h1()); return;
+        }
+
+        // GET — zwróć info o bazie i tabelach
+        auto tbl_info = [](NasDb& db, const std::string& tbl) -> std::string {
+            auto cnt = db.count_public(tbl);
+            return "\"" + tbl + "\":{\"rows\":" + std::to_string(cnt) + "}";
+        };
+
+        // Rozmiar pliku bazy
+        size_t db_size = 0;
+        {
+            struct stat st{};
+            auto db_path = g_db.path_public();
+            if(!db_path.empty() && stat(db_path.c_str(), &st)==0)
+                db_size = (size_t)st.st_size;
+        }
+
+        // Page count i page size
+        auto page_size  = g_db.query_public("PRAGMA page_size");
+        auto page_count = g_db.query_public("PRAGMA page_count");
+        auto wal_size   = g_db.query_public("PRAGMA wal_autocheckpoint");
+        auto journal    = g_db.query_public("PRAGMA journal_mode");
+        auto integrity  = g_db.query_public("PRAGMA quick_check");
+
+        std::string j = "{";
+        j += "\"enabled\":true";
+        j += ",\"path\":\"" + g_db.path_public() + "\"";
+        j += ",\"size_bytes\":" + std::to_string(db_size);
+        j += ",\"journal_mode\":\"" + (journal.empty()?"wal":journal[0]) + "\"";
+        j += ",\"integrity\":\"" + (integrity.empty()?"ok":integrity[0]) + "\"";
+        j += ",\"page_size\":" + (page_size.empty()?"4096":page_size[0]);
+        j += ",\"page_count\":" + (page_count.empty()?"0":page_count[0]);
+        j += ",\"tables\":{";
+        j += tbl_info(g_db, "blacklist") + ",";
+        j += tbl_info(g_db, "ban_events") + ",";
+        j += tbl_info(g_db, "migrations");
+        j += "}}";
+
+        Response r; r.status=200;
+        r.headers.set("Content-Type","application/json");
+        r.headers.set("Content-Length",std::to_string(j.size()));
+        r.headers.set("Cache-Control","no-cache");
+        r.body=j; write_response(conn,r.serialize_h1()); return;
+#else
+        std::string j="{\"enabled\":false}";
+        Response r; r.status=200;
+        r.headers.set("Content-Type","application/json");
+        r.headers.set("Content-Length",std::to_string(j.size()));
+        r.body=j; write_response(conn,r.serialize_h1()); return;
+#endif
     }
 
     } // end is_admin_path
