@@ -24,17 +24,33 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config \
             libuv1-dev libssl-dev zlib1g-dev \
             libbrotli-dev libnghttp2-dev \
             liblua5.4-dev
+
+      # Fetch vendory których CodeQL potrzebuje do buildu
+      # (sqlite i lua-cjson są włączone w Configure poniżej)
+      - name: Fetch vendors
+        run: |
+          if [ -f vendor/quickjs/fetch_quickjs.sh ]; then
+            bash vendor/quickjs/fetch_quickjs.sh
+          fi
+          if [ -f vendor/sqlite/fetch_sqlite.sh ]; then
+            bash vendor/sqlite/fetch_sqlite.sh
+          fi
+          if [ -f vendor/lua-cjson/fetch_lua_cjson.sh ]; then
+            bash vendor/lua-cjson/fetch_lua_cjson.sh
+          fi
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: c-cpp
           queries: security-extended,security-and-quality
+          # build-mode: manual — bo używamy własnego cmake/make
+          build-mode: manual
           config: |
             paths-ignore:
               - vendor/quickjs
@@ -49,7 +65,7 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DWITH_LUA=ON \
-            -DWITH_QUICKJS=OFF \
+            -DWITH_QUICKJS=ON \
             -DWITH_NGHTTP2=ON \
             -DWITH_BROTLI=ON \
             -DWITH_ACME=ON \
@@ -67,3 +83,6 @@ jobs:
         uses: github/codeql-action/analyze@v3
         with:
           category: /language:c-cpp
+          # Zapisz wyniki SARIF jako artifact dla łatwiejszego debugowania
+          output: results
+          upload: always
