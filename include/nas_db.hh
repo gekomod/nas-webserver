@@ -74,6 +74,8 @@ struct NasDb {
             );
             CREATE INDEX IF NOT EXISTS idx_ban_ts ON ban_events(ts DESC);
             CREATE INDEX IF NOT EXISTS idx_ban_ip ON ban_events(ip);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ban_unique
+                ON ban_events(ts, ip, reason);
         )");
 
         db_path_ = path;
@@ -155,7 +157,7 @@ struct NasDb {
         std::lock_guard<std::mutex> lk(mu_);
         if(!db_) return false;
         const char* sql =
-            "INSERT INTO ban_events(ts,ip,reason,detail) VALUES(?,?,?,?)";
+            "INSERT OR IGNORE INTO ban_events(ts,ip,reason,detail) VALUES(?,?,?,?)";
         sqlite3_stmt* st = prepare(sql);
         if(!st) return false;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)ev.ts);
@@ -195,24 +197,52 @@ struct NasDb {
     }
 
     // ── Migration from .txt files ─────────────────────────────────────────────
-    // Call once at startup AFTER open(). Safe to call even if files don't exist.
+    // Runs ONCE — guarded by a "migrations" table in the DB.
+    // Safe to call on every startup; skips if already migrated.
     void migrate_from_txt(const std::string& blacklist_txt,
                           const std::string& bans_txt) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if(!db_) return;
+
+        // Create migrations tracking table if not exists
+        exec("CREATE TABLE IF NOT EXISTS migrations ("
+             "  name TEXT PRIMARY KEY NOT NULL,"
+             "  ts   INTEGER NOT NULL DEFAULT (strftime('%s','now'))"
+             ")");
+
+        // Check if already migrated
+        {
+            sqlite3_stmt* st = prepare(
+                "SELECT 1 FROM migrations WHERE name = 'txt_import' LIMIT 1");
+            if(!st) return;
+            bool already_done = (sqlite3_step(st) == SQLITE_ROW);
+            sqlite3_finalize(st);
+            if(already_done) return;  // migration already ran — skip
+        }
+
         // Blacklist
         FILE* f = fopen(blacklist_txt.c_str(), "r");
         if(f) {
             char buf[64];
             int imported = 0;
+            // Use INSERT OR IGNORE — blacklist_add also uses it, but
+            // we call exec directly here since mutex is already held
+            exec("BEGIN");
             while(fgets(buf, sizeof(buf), f)) {
                 std::string ip(buf);
                 while(!ip.empty() &&
                       (ip.back()=='\n'||ip.back()=='\r'||ip.back()==' '))
                     ip.pop_back();
-                if(!ip.empty()) {
-                    blacklist_add(ip);
-                    imported++;
-                }
+                if(ip.empty()) continue;
+                sqlite3_stmt* st = prepare(
+                    "INSERT OR IGNORE INTO blacklist(ip) VALUES(?)");
+                if(!st) continue;
+                sqlite3_bind_text(st, 1, ip.c_str(), -1, SQLITE_STATIC);
+                sqlite3_step(st);
+                sqlite3_finalize(st);
+                imported++;
             }
+            exec("COMMIT");
             fclose(f);
             if(imported > 0)
                 fprintf(stderr, "[nas_db] Migrated %d IPs from %s\n",
@@ -224,11 +254,11 @@ struct NasDb {
         if(fb) {
             char buf[512];
             int imported = 0;
+            exec("BEGIN");
             while(fgets(buf, sizeof(buf), fb)) {
                 std::string line(buf);
                 while(!line.empty() && (line.back()=='\n'||line.back()=='\r'))
                     line.pop_back();
-                // Format: ts|ip|reason|detail
                 auto p1 = line.find('|');
                 auto p2 = line.find('|', p1+1);
                 auto p3 = line.find('|', p2+1);
@@ -240,14 +270,28 @@ struct NasDb {
                 ev.ip     = line.substr(p1+1, p2-p1-1);
                 ev.reason = line.substr(p2+1, p3-p2-1);
                 ev.detail = line.substr(p3+1);
-                ban_insert(ev);
+                // insert directly — mutex already held
+                sqlite3_stmt* st = prepare(
+                    "INSERT OR IGNORE INTO ban_events(ts,ip,reason,detail) VALUES(?,?,?,?)");
+                if(!st) continue;
+                sqlite3_bind_int64(st, 1, (sqlite3_int64)ev.ts);
+                sqlite3_bind_text (st, 2, ev.ip.c_str(),     -1, SQLITE_STATIC);
+                sqlite3_bind_text (st, 3, ev.reason.c_str(), -1, SQLITE_STATIC);
+                sqlite3_bind_text (st, 4, ev.detail.c_str(), -1, SQLITE_STATIC);
+                sqlite3_step(st);
+                sqlite3_finalize(st);
                 imported++;
             }
+            exec("COMMIT");
             fclose(fb);
             if(imported > 0)
                 fprintf(stderr, "[nas_db] Migrated %d ban events from %s\n",
                         imported, bans_txt.c_str());
         }
+
+        // Mark migration as done — won't run again
+        exec("INSERT OR IGNORE INTO migrations(name) VALUES('txt_import')");
+        fprintf(stderr, "[nas_db] Migration complete — txt files will no longer be imported\n");
     }
 
 private:

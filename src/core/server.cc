@@ -105,14 +105,8 @@ static std::string                        g_blacklist_file{"/var/lib/nas-web/bla
 // no dirty flag needed. Call sites replaced with g_db.blacklist_add/remove().
 
 static void blacklist_flush_sync(){
-    // Ban events: sync in-memory recent_bans deque → SQLite
-    if(!g_db.is_open()) return;
-    std::lock_guard<std::mutex> lk(g_autoban.mu_pub());
-    for(auto& b : g_autoban.recent_bans){
-        DbBanEvent ev;
-        ev.ip = b.ip; ev.reason = b.reason; ev.detail = b.detail; ev.ts = b.ts;
-        g_db.ban_insert(ev);
-    }
+    // Ban events are written immediately in do_ban via on_ban callback.
+    // Nothing to flush here — SQLite writes are per-event, not batch.
 }
 
 static void bans_load(){
@@ -2598,6 +2592,17 @@ int main(int argc, char** argv) {
             g_blacklist.insert(ip);
         }
         g_db.blacklist_add(ip);  // persist immediately to SQLite
+        // Persist ban event immediately — INSERT OR IGNORE prevents duplicates
+        DbBanEvent ev;
+        ev.ip = ip; ev.ts = time(nullptr);
+        auto sep = reason.find(':');
+        if(sep != std::string::npos) {
+            ev.reason = reason.substr(0, sep);
+            ev.detail = reason.substr(sep + 2);
+        } else {
+            ev.reason = reason;
+        }
+        g_db.ban_insert(ev);
         audit("autoban", "autoban", ip + " — " + reason);
         NW_WARN("autoban", "BANNED %s — %s", ip.c_str(), reason.c_str());
     };

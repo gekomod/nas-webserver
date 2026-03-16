@@ -739,25 +739,6 @@ server {
   domains example.com;
   staging off;
 }</code><span class="badge green">✓ gotowe</span></div>
-
-      <div class="mod-card"><div class="mod-title">🗄 SQLite3 Persistence</div>
-        <div class="mod-desc">Vendored SQLite3 (single-file amalgamation). Zastępuje blacklist.txt i recent_bans.txt — atomowe zapisy, WAL mode, indeksy. Migracja z plików .txt automatycznie przy pierwszym starcie.</div>
-        <code class="mod-cfg"># Baza automatycznie w:
-# /var/lib/nas-web/nas-web.db
-#
-# Build:
-bash vendor/sqlite/fetch_sqlite.sh
-build-deb.sh --with-sqlite</code><span class="badge green">✓ gotowe</span></div>
-
-      <div class="mod-card"><div class="mod-title">🔣 lua-cjson</div>
-        <div class="mod-desc">Szybki JSON encoder/decoder dla skryptów Lua (fork OpenResty). Dostępny jako <code>require("cjson")</code> w każdym skrypcie middleware. Obsługuje <code>cjson.safe</code> (nie rzuca błędów).</div>
-        <code class="mod-cfg">-- w skrypcie Lua:
-local cjson = require("cjson")
-local obj = cjson.decode(req.body)
-local out = cjson.encode({
-  status = "ok",
-  ip     = req.client_ip
-})</code><span class="badge green">✓ gotowe</span></div>
     </div>
 
     <!-- CONFIG EXAMPLES -->
@@ -897,37 +878,6 @@ local line = string.format(
     response.status)
 local f = io.open("/var/log/nas-panel/access.log","a")
 if f then f:write(line); f:close() end</textarea>
-        </div>
-        <div>
-          <div style="font-size:11px;color:var(--dim);margin-bottom:6px">JSON API response (cjson)</div>
-          <textarea class="config-area" style="height:180px;font-size:11px" readonly>-- json_api.lua
--- Wymaga: build-deb.sh --with-lua-cjson
-local cjson = require("cjson")
-
-function on_request(req)
-  if req.path ~= "/api/status" then return nil end
-  local body = cjson.encode({
-    status  = "ok",
-    version = "2.3.0",
-    ip      = req.client_ip,
-    ts      = np.time()
-  })
-  return { status=200, body=body,
-    headers={ ["Content-Type"]="application/json" } }
-end
-
-function on_response(req, resp)
-  -- parse i modyfikuj JSON body
-  if resp.status == 200 then
-    local ok, obj = pcall(cjson.decode, resp.body)
-    if ok and type(obj) == "table" then
-      obj["x-processed"] = true
-      resp.body = cjson.encode(obj)
-    end
-  end
-  return resp
-end</textarea>
-          <div style="font-size:10px;color:var(--dim);margin-top:4px">Użycie: <code>lua_middleware /etc/nas-web/json_api.lua;</code></div>
         </div>
         <div>
           <div style="font-size:11px;color:var(--dim);margin-bottom:6px">Prometheus /metrics</div>
@@ -2127,7 +2077,7 @@ async function fetchServerLogs(){
     const ico = LV_ICO[lv]||'·';
     const mod = e.module||'';
     const mclr= MOD_CLR[mod]||'var(--dim)';
-    const msg = (e.msg||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const msg = (e.msg||'').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,' ').replace(/\r/g,'');
     return `<div class="log-entry" data-level="${lv}" data-module="${mod}" data-msg="${msg.toLowerCase()}"
       style="display:grid;grid-template-columns:155px 55px 70px minmax(0,1fr);gap:0;padding:3px 12px;align-items:center;border-bottom:1px solid var(--border)20">
       <span class="log-ts" style="font-size:10px">${e.ts||'—'}</span>
@@ -2205,7 +2155,6 @@ function filterSrvLog(){
 }
 
 function clearLog(id){const b=document.getElementById(id);if(b)b.innerHTML='';}
-function clearLog(id){const b=document.getElementById(id);if(b)b.innerHTML='';}
 
 // ── Cache ────────────────────────────────────────────────────────────────────
 // cache data loaded from /np_cache
@@ -2271,8 +2220,6 @@ const MODULES=[
   {name:'Cache',ver:'built-in',status:'active',color:'blue',desc:'LRU response cache with TTL and RFC 7234 Cache-Control support. Configurable size and TTL.',tags:['lru','cache-control','ttl']},
   {name:'Rate Limiter',ver:'built-in',status:'active',color:'blue',desc:'Token bucket rate limiter per client IP. Configurable rate, burst, and window per location.',tags:['ratelimit','token-bucket','per-ip']},
   {name:'Static Handler',ver:'built-in',status:'active',color:'blue',desc:'Serves static files with gzip, ETag, Range, Last-Modified and SPA fallback to index.html.',tags:['static','gzip','etag','range','spa']},
-  {name:'SQLite3',ver:'3.45+',status:'loaded',color:'green',desc:'Vendored SQLite3 amalgamation — persistent storage for IP blacklist and ban events. Replaces blacklist.txt / recent_bans.txt. WAL mode, atomic writes.',tags:['sqlite','persistence','blacklist','bans','wal']},
-  {name:'lua-cjson',ver:'2.1.0',status:'loaded',color:'green',desc:'Fast JSON encoder/decoder for Lua scripts (OpenResty fork). Available as require("cjson") in all Lua middleware. Supports cjson.safe mode.',tags:['lua','json','cjson','middleware']},
 ];
 async function toggleFeature(id, enable) {
   const r = await api('/np_features', {method:'POST',
@@ -2292,8 +2239,7 @@ async function renderModules(){
   const ICONS = {
     cache:'💾', ratelimit:'🔒', gzip:'📦', lua:'🌙',
     js:'⚡', tls:'🔐', h2:'🚀', healthcheck:'💓', acme:'🔑',
-    waf_regex:'🔍', waf_modsec:'🛡', autoban:'🚫',
-    sqlite:'🗄', 'lua-cjson':'🔣', default:'🔧'
+    waf_regex:'🔍', waf_modsec:'🛡', autoban:'🚫', default:'🔧'
   };
 
   // Pobierz stan WAF i wstaw jako wirtualne moduły
@@ -2368,10 +2314,6 @@ async function renderModules(){
                         : '\u2699 W\u0142\u0105cz: build-deb.sh --with-zstd',
         'janet':     on ? '\u2713 Regu\u0142y WAF z plików .janet w /etc/nas-web/scripts/'
                         : '\u2699 W\u0142\u0105cz: build-deb.sh --with-janet',
-        'sqlite':    on ? '\u2713 Aktywny — /var/lib/nas-web/nas-web.db (WAL mode)'
-                        : '\u2699 W\u0142\u0105cz: build-deb.sh --with-sqlite (domy\u015blnie ON)',
-        'lua-cjson': on ? '\u2713 Aktywny — require(\"cjson\") dost\u0119pne w Lua middleware'
-                        : '\u2699 W\u0142\u0105cz: build-deb.sh --with-lua-cjson (domy\u015blnie ON)',
         'optimizer': '\u2713 Automatyczny — CSS minify, HTML lazy-img, charset',
         'tls':       on ? '\u2713 Certyfikat za\u0142adowany — konfiguracja w nas-web.conf'
                         : '\u2699 Dodaj ssl_cert i ssl_key w nas-web.conf',
@@ -2671,7 +2613,7 @@ function appendSSEEntries(entries) {
     const ico = LV_ICO[lv]||'·';
     const mod = e.module||'';
     const mclr= MOD_CLR[mod]||'var(--dim)';
-    const msg = (e.msg||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const msg = (e.msg||'').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,' ').replace(/\r/g,'');
     const row = document.createElement('div');
     row.className='log-entry';
     row.dataset.level=lv; row.dataset.module=mod; row.dataset.msg=msg.toLowerCase();
