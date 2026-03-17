@@ -1994,8 +1994,32 @@ function showApp(){
 if(authHeader){fetch('/np_status',{headers:{Authorization:authHeader}}).then(r=>{if(r.ok)showApp();else{authHeader='';sessionStorage.removeItem('nw_auth');}}).catch(()=>{});}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function api(path,opts={}){
-  return fetch(path,{...opts,headers:{Authorization:authHeader,...(opts.headers||{})}})
+// ── CSRF token cache ─────────────────────────────────────────────────────────
+let _csrfToken = null;
+let _csrfFetched = 0;
+async function getCsrfToken() {
+  const now = Date.now() / 1000;
+  if(_csrfToken && now - _csrfFetched < 3500) return _csrfToken; // cache ~1h
+  try {
+    const r = await fetch('/np_csrf', {headers:{Authorization:authHeader}});
+    if(r.ok) { const d = await r.json(); _csrfToken = d.token; _csrfFetched = now; }
+  } catch(e) {}
+  return _csrfToken || '';
+}
+
+function api(path, opts={}) {
+  const method = (opts.method||'GET').toUpperCase();
+  const needsCsrf = ['POST','PUT','DELETE'].includes(method);
+  if(needsCsrf) {
+    return getCsrfToken().then(tok => {
+      return fetch(path, {...opts, headers: {
+        Authorization: authHeader,
+        'X-CSRF-Token': tok,
+        ...(opts.headers||{})
+      }}).then(r=>r.ok?r.json().catch(()=>null):null).catch(()=>null);
+    });
+  }
+  return fetch(path, {...opts, headers:{Authorization:authHeader,...(opts.headers||{})}})
     .then(r=>r.ok?r.json().catch(()=>null):null)
     .catch(()=>null);
 }

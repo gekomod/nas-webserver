@@ -91,6 +91,42 @@ static int         g_wstats_count{0}; // set during startup
 static std::mutex                         g_blacklist_mu;
 static std::unordered_set<std::string>    g_blacklist;
 
+// ── Admin brute-force protection ──────────────────────────────────────────────
+struct AdminFailTracker {
+    struct Entry { int count{0}; time_t first{0}; time_t locked_until{0}; };
+    std::unordered_map<std::string, Entry> fails;
+    std::mutex mu;
+    static constexpr int  MAX_FAILS    = 5;     // bany po 5 nieudanych próbach
+    static constexpr int  WINDOW_SEC   = 60;    // okno 60s
+    static constexpr int  LOCKOUT_SEC  = 300;   // blokada 5 minut
+
+    // Zwraca true jeśli IP jest zablokowane
+    bool is_locked(const std::string& ip) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = fails.find(ip);
+        if(it == fails.end()) return false;
+        if(it->second.locked_until > time(nullptr)) return true;
+        return false;
+    }
+    // Rejestruje nieudaną próbę, zwraca true jeśli właśnie zablokowano
+    bool record_fail(const std::string& ip) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto& e = fails[ip];
+        time_t now = time(nullptr);
+        if(now - e.first > WINDOW_SEC) { e.count = 0; e.first = now; }
+        e.count++;
+        if(e.count >= MAX_FAILS) {
+            e.locked_until = now + LOCKOUT_SEC;
+            return true;
+        }
+        return false;
+    }
+    void record_success(const std::string& ip) {
+        std::lock_guard<std::mutex> lk(mu);
+        fails.erase(ip);
+    }
+} g_admin_fails;
+
 // ── Singleton globals — shared across all workers (defined once here) ────────
 #define AUTOBAN_IMPL
 AutoBan           g_autoban;
@@ -781,6 +817,15 @@ static void dispatch(Conn* conn) {
         r.headers.set("X-Frame-Options", "DENY");
         r.headers.set("X-Content-Type-Options", "nosniff");
         r.headers.set("Referrer-Policy", "no-referrer");
+        r.headers.set("Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "  // inline JS w panelu
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'");
+        r.headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+        r.headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
         r.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
         r.body = ADMIN_HTML;
         write_response(conn, r.serialize_h1()); return;
@@ -800,7 +845,8 @@ static void dispatch(Conn* conn) {
                rpath == "/np_autoban" ||
                rpath == "/np_waf" ||
                rpath == "/np_waf_regex" ||
-               rpath == "/np_db";
+               rpath == "/np_db" ||
+               rpath == "/np_csrf";
     };
 
     if(is_admin_path()) {
@@ -821,14 +867,34 @@ static void dispatch(Conn* conn) {
         const std::string& pass = cfg.admin_password;
         if(!pass.empty()) {
             bool authed = false;
+
+            // Brute-force lockout check
+            if(g_admin_fails.is_locked(conn->client_ip)) {
+                Response r; r.status = 429;
+                r.headers.set("Content-Type",   "application/json");
+                r.headers.set("Content-Length", "44");
+                r.headers.set("Cache-Control",  "no-store");
+                r.headers.set("Retry-After",    "300");
+                r.body = "{\"error\":\"Too many failed attempts\"}";
+                write_response(conn, r.serialize_h1()); return;
+            }
+
             auto auth_hdr = conn->req.headers.get("Authorization");
             if(!auth_hdr.empty() && auth_hdr.size() > 6 && auth_hdr.substr(0,6) == "Basic ") {
                 std::string decoded = b64decode(std::string(auth_hdr.substr(6)));
-                authed = (decoded == cfg.admin_user + ":" + pass);
+                // Timing-safe comparison — prevents timing oracle attacks
+                const std::string expected = cfg.admin_user + ":" + pass;
+                if(decoded.size() == expected.size()) {
+                    uint8_t diff = 0;
+                    for(size_t i = 0; i < expected.size(); i++)
+                        diff |= (uint8_t)decoded[i] ^ (uint8_t)expected[i];
+                    authed = (diff == 0);
+                }
             }
             if(!authed) {
-                // Return 401 WITHOUT WWW-Authenticate — prevents browser popup
-                // The admin panel JS handles login with its own form
+                bool locked = g_admin_fails.record_fail(conn->client_ip);
+                if(locked)
+                    NW_WARN("admin", "Admin brute-force lockout: %s", conn->client_ip.c_str());
                 Response r; r.status = 401;
                 r.headers.set("Content-Type",   "application/json");
                 r.headers.set("Content-Length", "27");
@@ -836,6 +902,60 @@ static void dispatch(Conn* conn) {
                 r.body = "{\"error\":\"Unauthorized\"}";
                 write_response(conn, r.serialize_h1()); return;
             }
+            g_admin_fails.record_success(conn->client_ip);
+        }
+
+        // ── CSRF protection dla mutujących żądań ─────────────────────────────
+        // Token = hex(sha256-like(ip + secret + hour)) — stateless, regenerowany co godzinę
+        // Panel JS wysyła token jako nagłówek X-CSRF-Token przy każdym POST/DELETE
+        auto make_csrf = [&]() -> std::string {
+            time_t hour = time(nullptr) / 3600;
+            std::string seed = conn->client_ip + cfg.admin_password + std::to_string(hour);
+            // FNV-1a 64-bit jako prosty MAC (nie kryptograficzny, ale wystarczy dla CSRF)
+            uint64_t h = 14695981039346656037ULL;
+            for(char c : seed) { h ^= (uint8_t)c; h *= 1099511628211ULL; }
+            char buf[17]; snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+            return std::string(buf);
+        };
+
+        if(conn->req.method == Method::POST ||
+           conn->req.method == Method::DELETE ||
+           conn->req.method == Method::PUT) {
+            // Wyłącz CSRF check dla endpointów które są wywoływane przez curl/API
+            bool csrf_exempt = (rpath == "/np_reload" || rpath == "/np_restart");
+            if(!csrf_exempt) {
+                auto csrf_hdr = conn->req.headers.get("X-CSRF-Token");
+                std::string expected_now  = make_csrf();
+                // Sprawdź też poprzednią godzinę (okno 2h)
+                time_t prev_hour = (time(nullptr) / 3600 - 1);
+                std::string seed_prev = conn->client_ip + cfg.admin_password + std::to_string(prev_hour);
+                uint64_t h2 = 14695981039346656037ULL;
+                for(char c : seed_prev) { h2 ^= (uint8_t)c; h2 *= 1099511628211ULL; }
+                char buf2[17]; snprintf(buf2, sizeof(buf2), "%016llx", (unsigned long long)h2);
+                std::string expected_prev(buf2);
+
+                if(csrf_hdr.empty() ||
+                   (csrf_hdr != expected_now && csrf_hdr != expected_prev)) {
+                    NW_WARN("admin", "CSRF token mismatch from %s for %s",
+                            conn->client_ip.c_str(), rpath.c_str());
+                    Response r; r.status = 403;
+                    r.headers.set("Content-Type","application/json");
+                    r.headers.set("Content-Length","30");
+                    r.body = "{\"error\":\"CSRF token invalid\"}";
+                    write_response(conn, r.serialize_h1()); return;
+                }
+            }
+        }
+
+        // Endpoint /np_csrf — zwraca aktualny token dla panelu JS
+        if(rpath == "/np_csrf") {
+            std::string tok = make_csrf();
+            std::string j = "{\"token\":\"" + tok + "\"}";
+            Response r; r.status = 200;
+            r.headers.set("Content-Type","application/json");
+            r.headers.set("Content-Length",std::to_string(j.size()));
+            r.headers.set("Cache-Control","no-store");
+            r.body = j; write_response(conn, r.serialize_h1()); return;
         }
 
         // Force Connection: close for all admin API endpoints
