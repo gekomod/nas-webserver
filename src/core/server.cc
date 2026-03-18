@@ -2111,8 +2111,7 @@ static void dispatch(Conn* conn) {
         if(g_blacklist.count(conn->client_ip)) {
             NW_DEBUG("blacklist", "Blocked IP: %s", conn->client_ip.c_str());
             g_stat_err.fetch_add(1, std::memory_order_relaxed);
-            uv_close((uv_handle_t*)&conn->client, [](uv_handle_t* h){
-                delete static_cast<Conn*>(h->data); });
+            close_conn(conn);  // must go via close_conn — idle_timer may be active
             return;
         }
     }
