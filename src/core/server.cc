@@ -812,7 +812,7 @@ static void dispatch(Conn* conn) {
         // Security headers
         Response r; r.status = 200;
         r.headers.set("Content-Type",   "text/html; charset=utf-8");
-        r.headers.set("Content-Length", std::to_string(strlen(ADMIN_HTML)));
+        // Content-Length set below after conditional SQLite nav strip
         r.headers.set("Cache-Control",  "no-cache, no-store");
         r.headers.set("X-Frame-Options", "DENY");
         r.headers.set("X-Content-Type-Options", "nosniff");
@@ -827,7 +827,19 @@ static void dispatch(Conn* conn) {
         r.headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
         r.headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
         r.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-        r.body = ADMIN_HTML;
+        // Warunkowo usuń SQLite nav item jeśli nie skompilowano z HAVE_SQLITE
+        {
+            std::string html(ADMIN_HTML);
+#ifndef HAVE_SQLITE
+            // Usuń blok między markerami
+            auto s = html.find("<!--SQLITE_NAV_START-->");
+            auto e = html.find("<!--SQLITE_NAV_END-->");
+            if(s != std::string::npos && e != std::string::npos)
+                html.erase(s, e - s + strlen("<!--SQLITE_NAV_END-->"));
+#endif
+            r.headers.set("Content-Length", std::to_string(html.size()));
+            r.body = std::move(html);
+        }
         write_response(conn, r.serialize_h1()); return;
     }
 

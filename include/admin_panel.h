@@ -483,9 +483,12 @@ body.nav-open #nav-overlay { display: block; }
   <div class="nav-item" onclick="show('waf',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0L1 3v5c0 4.1 3 7.9 7 9 4-1.1 7-4.9 7-9V3L8 0zm0 2l5 2.2V8c0 2.8-2.2 5.3-5 6.3C5.2 13.3 3 10.8 3 8V4.2L8 2z"/></svg>WAF ModSec
   </div>
-  <div class="nav-item" id="nav-db" style="display:none" onclick="show('db',this)">
+<!-- nav-db: rendered only when compiled with HAVE_SQLITE -->
+<!--SQLITE_NAV_START-->
+  <div class="nav-item" id="nav-db" onclick="show('db',this)">
     <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2C4.69 2 2 3.12 2 4.5S4.69 7 8 7s6-1.12 6-2.5S11.31 2 8 2zM2 6.5v2C2 9.88 4.69 11 8 11s6-1.12 6-2.5v-2C14 7.88 11.31 9 8 9S2 7.88 2 6.5zM2 10.5v2C2 13.88 4.69 15 8 15s6-1.12 6-2.5v-2C14 11.88 11.31 13 8 13s-6-1.12-6-2.5z"/></svg>SQLite — Baza
   </div>
+<!--SQLITE_NAV_END-->
 </nav>
 
 <div class="content">
@@ -2066,7 +2069,6 @@ function show(id,el){
   }
   if(id==='logs'){
     fetchServerLogs();
-    loadDb();  // sprawdź czy SQLite aktywne → pokaż nav item
     if(!window._logTimer) window._logTimer = setInterval(()=>{
       const active = document.getElementById('sec-logs');
       if(active && active.classList.contains('active')){
@@ -2711,12 +2713,7 @@ function filterAudit() {
 // ── SQLite Database ──────────────────────────────────────────────────────────
 async function loadDb() {
   const data = await api('/np_db');
-  if(!data) return;
-
-  // Pokaż/ukryj nav item zależnie od tego czy SQLite jest włączony
-  const navDb = document.getElementById('nav-db');
-  if(navDb) navDb.style.display = data.enabled ? '' : 'none';
-  if(!data.enabled) return;
+  if(!data || !data.enabled) return;
 
   // Status grid
   const grid = document.getElementById('db-status-grid');
