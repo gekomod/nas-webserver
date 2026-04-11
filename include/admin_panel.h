@@ -1127,7 +1127,7 @@ sqlite3 /var/lib/nas-web/nas-web.db ".backup /backup/nas-web.db"
 
 <!-- SECURITY -->
 <div class="section" id="sec-security">
-  <div class="page-title"><h1>Security</h1><span class="sub">blacklist &amp; connection limits</span></div>
+  <div class="page-title"><h1>Security</h1><span class="sub">blacklist &amp; whitelist &amp; connection limits</span></div>
 
   <!-- Connection Limits -->
   <div class="panel">
@@ -1162,6 +1162,31 @@ sqlite3 /var/lib/nas-web/nas-web.db ".backup /backup/nas-web.db"
       <button class="btn" onclick="loadBlacklist()" style="opacity:.6">&#x21BB; Refresh</button>
     </div>
     <div id="blacklist-table" style="padding:0 20px 16px"></div>
+  </div>
+
+  <!-- IP Whitelist -->
+  <div class="panel" style="margin-top:16px">
+    <div class="panel-head">
+      <span class="panel-title">✅ IP Whitelist</span>
+      <span id="whitelist-count" class="badge dim">0 IPs</span>
+    </div>
+    <div style="padding:12px 20px 8px;font-size:11px;color:var(--dim)">
+      Adresy IP na whiteliście <strong>nigdy</strong> nie są blokowane przez blacklistę, AutoBan ani WAF — niezależnie od ruchu.<br>
+      Obsługuje dokładne adresy IP oraz prefiksy (np. <code>192.168.1.</code> obejmuje całą podsieć /24).
+    </div>
+    <div style="padding:0 20px 8px;display:grid;grid-template-columns:1fr 1fr auto auto;gap:12px;align-items:center">
+      <input type="text" id="whitelist-ip" placeholder="np. 1.2.3.4 lub 192.168.1."
+        style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:9px 12px;color:var(--bright);font-family:JetBrains Mono,monospace;font-size:12px;outline:none;width:100%"
+        onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+        onkeydown="if(event.key==='Enter')whitelistAdd()">
+      <input type="text" id="whitelist-note" placeholder="notatka (opcjonalnie)"
+        style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:9px 12px;color:var(--bright);font-family:JetBrains Mono,monospace;font-size:12px;outline:none;width:100%"
+        onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+        onkeydown="if(event.key==='Enter')whitelistAdd()">
+      <button class="btn btn-primary" onclick="whitelistAdd()">&#xFF0B; Dodaj</button>
+      <button class="btn" onclick="loadWhitelist()" style="opacity:.6">&#x21BB; Odśwież</button>
+    </div>
+    <div id="whitelist-table" style="padding:0 20px 16px"></div>
   </div>
 
   <!-- IP Allowlist for admin panel -->
@@ -2045,7 +2070,7 @@ function show(id,el){
   if(id==='overview') requestAnimationFrame(()=>{ fetchAll(); drawRpsChart(); });
   if(id==='upstream')    loadUpstreams();
   if(id==='modules')     renderModules();
-  if(id==='security')  { loadBlacklist(); loadSettings(); }
+  if(id==='security')  { loadBlacklist(); loadWhitelist(); loadSettings(); }
   if(id==='upstreams')   loadUpstreams();
   if(id==='workers')     renderWorkers(null);
   if(id==='ssl')         refreshAcme();
@@ -2741,6 +2766,7 @@ async function loadDb() {
       blacklist:   {icon:'🚫', desc:'Zbanowane adresy IP'},
       ban_events:  {icon:'📋', desc:'Historia zdarzeń banowania'},
       migrations:  {icon:'🔄', desc:'Historia migracji bazy'},
+      whitelist:   {icon:'✅', desc:'Zaufane adresy IP (bypass WAF/blacklist)'},
     };
     tbls.innerHTML = Object.entries(data.tables).map(([name, info]) => {
       const d = TABLE_DESC[name] || {icon:'🗃', desc:name};
@@ -3102,6 +3128,46 @@ async function blacklistRemove(ip){
   await api('/np_blacklist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove',ip})});
   toast('IP unblocked: '+ip); loadBlacklist();
 }
+
+// ── IP Whitelist ──────────────────────────────────────────────────────────────
+async function loadWhitelist(){
+  const d = await api('/np_whitelist');
+  if(!d) return;
+  const entries = d.entries||[];
+  const cnt = document.getElementById('whitelist-count');
+  if(cnt) cnt.textContent = entries.length+' IPs';
+  const tbl = document.getElementById('whitelist-table');
+  if(!tbl) return;
+  if(entries.length===0){
+    tbl.innerHTML='<div style="padding:8px 0;color:var(--dim);font-size:12px">Brak wpisów — dodaj adresy IP które nigdy nie mają być blokowane</div>';
+    return;
+  }
+  const rows = entries.map(e=>`<tr>
+    <td style="font-family:JetBrains Mono,monospace;font-size:12px">${e.ip}</td>
+    <td style="font-size:11px;color:var(--dim)">${e.note||''}</td>
+    <td><button class="btn" onclick="whitelistRemove('${e.ip}')" style="font-size:10px;padding:3px 8px;color:var(--red)">Usuń</button></td>
+  </tr>`).join('');
+  tbl.innerHTML=`<table class="conn-table" style="width:100%">
+    <thead><tr><th>IP / Prefiks</th><th>Notatka</th><th style="width:60px">Akcja</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+async function whitelistAdd(){
+  const ip   = document.getElementById('whitelist-ip').value.trim();
+  const note = document.getElementById('whitelist-note').value.trim();
+  if(!ip){ toast('Podaj adres IP lub prefiks'); return; }
+  await api('/np_whitelist',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'add',ip,note})});
+  document.getElementById('whitelist-ip').value='';
+  document.getElementById('whitelist-note').value='';
+  toast('✓ Dodano do whitelisty: '+ip);
+  loadWhitelist();
+}
+async function whitelistRemove(ip){
+  await api('/np_whitelist',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'remove',ip})});
+  toast('Usunięto z whitelisty: '+ip);
+  loadWhitelist();
+}
 async function saveConnLimit(){
   const n = parseInt(document.getElementById('connlimit-val').value)||0;
   const d = await api('/np_settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_conns_per_ip:n})});
@@ -3131,13 +3197,16 @@ function showAddUpstream(){
 }
 async function loadUpstreams(){
   const d = await api('/np_upstream');
-  const container = document.getElementById('upstream-pool-table');
-  if(!container) return;
+  // Support both element IDs — upstream-table (Upstreams page) and upstream-pool-table (dashboard widget)
+  const container  = document.getElementById('upstream-table');
+  const container2 = document.getElementById('upstream-pool-table');
+  const noData = '<tr><td colspan="5" style="padding:16px;color:var(--dim);text-align:center">No upstreams configured</td></tr>';
   if(!d || !d.upstreams || d.upstreams.length===0){
-    container.innerHTML='<tr><td colspan="5" style="padding:16px;color:var(--dim);text-align:center">No upstreams configured</td></tr>';
+    if(container)  container.innerHTML  = noData.replace(/<tr>|<\/tr>/g,'').replace(/<td[^>]*>/,'<div style="padding:16px;color:var(--dim);text-align:center">').replace(/<\/td>/,'</div>');
+    if(container2) container2.innerHTML = noData;
     return;
   }
-  container.innerHTML = d.upstreams.map(u=>`<tr>
+  const tableRows = d.upstreams.map(u=>`<tr>
     <td style="font-weight:600;color:var(--bright)">${u.name}</td>
     <td style="font-family:monospace;font-size:11px">${u.address}</td>
     <td><span class="badge ${u.source==='config'?'dim':'blue'}">${u.source||'config'}</span></td>
@@ -3147,6 +3216,11 @@ async function loadUpstreams(){
       <button class="btn" onclick="removeUpstream('${u.name}')" style="font-size:10px;padding:3px 8px;color:var(--red);margin-left:4px">Remove</button>
     `:'<span style="color:var(--dim);font-size:10px">edit config</span>'}</td>
   </tr>`).join('');
+  const fullTable = `<table class="conn-table" style="width:100%">
+    <thead><tr><th>Name</th><th>Address</th><th>Source</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>${tableRows}</tbody></table>`;
+  if(container)  container.innerHTML  = fullTable;
+  if(container2) container2.innerHTML = tableRows;
 }
 async function addUpstream(){
   const name=document.getElementById('up-name').value.trim();
@@ -3266,7 +3340,7 @@ function init(){
   const btn = document.getElementById('theme-toggle');
   if(btn) btn.textContent = document.documentElement.classList.contains('light') ? '☽' : '☀';
   loadConfig();renderModules();renderSysInfo(null);loadSSLStatus();
-  loadBlacklist();loadSettings();loadUpstreams();
+  loadBlacklist();loadWhitelist();loadSettings();loadUpstreams();
   fetchAll();animateRefresh(3000);
   updateWafHeaderBadges();
   // Overview auto-refresh: only when overview tab active

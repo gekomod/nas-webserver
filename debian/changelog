@@ -1,4 +1,52 @@
+nas-web (2.3.2-1) stable; urgency=medium
+
+  * Nowe: IP Whitelist — adresy nigdy nie blokowane przez blacklistę/AutoBan/WAF
+    - np_config.hh: pole std::vector<std::string> whitelist w Config
+    - Składnia: whitelist 192.168.1. 10.0.0.5; (dokładne IP lub prefiksy)
+    - g_whitelist + is_whitelisted() — sprawdzenie przed każdym banerem
+    - Dodanie do whitelisty automatycznie usuwa IP z blacklisty
+    - Ładowanie przy starcie: z DB (tabela whitelist) + config statyczny
+    - Panel: zakładka Security → nowy panel ✅ IP Whitelist (pole IP + notatka)
+    - API: /np_whitelist GET/POST (action: add/remove)
+  * Nowe: tabela whitelist w SQLite (nas_db.hh)
+    - CREATE TABLE whitelist(ip TEXT PRIMARY KEY, note TEXT, ts INTEGER)
+    - Metody: whitelist_add(ip, note), whitelist_remove(ip), whitelist_load()
+    - Stub dla kompilacji bez HAVE_SQLITE
+    - Panel bazy danych: dodano kafelek ✅ whitelist (był pusty)
+  * Nowe: waf disabled w bloku server {} — wyłącza całe bezpieczeństwo dla vhosta
+    - Składnia: waf disabled; (lub waf off; waf false;)
+    - Wyłącza: AutoBan + WAF Regex + ModSecurity dla danej subdomeny
+    - Przeznaczenie: Radarr/Sonarr/Jellyfin — aplikacje medialne fałszywie
+      wyzwalają reguły WAF (tytuły filmów w URL, parametry wyszukiwania)
+    - np_config.hh: pole bool waf_disabled{false} w ServerConfig
+    - config_parser.cc: parsowanie dyrektywy waf w bloku server {}
+    - Flaga skip_waf = srv.waf_disabled || client_whitelisted w dispatch()
+    - Przykłady w nas-web.conf (zakomentowane bloki radarr/sonarr/jellyfin)
+  * Bugfix: usunięcie IP z blacklisty nie przywracało dostępu bez restartu
+    - Przyczyna: keep-alive połączenia TCP od zbanowanego IP pozostawały otwarte
+    - Fix: po action=remove w /np_blacklist zamykane są wszystkie aktywne
+      połączenia (close_conn()) od odbanowanego IP — efekt natychmiastowy
+    - Naprawiono audit log przy remove (brakowało wywołania audit())
+  * Bugfix: health check fałszywie oznaczał backendy jako Down (502 Bad Gateway)
+    - hc_enabled zmieniono z true na false — health check jest teraz opt-in
+    - Aktywacja: health_check /ścieżka; w bloku upstream {}
+    - probe_http(): expected_status=0 akceptuje teraz dowolną odpowiedź 2xx/3xx
+      (wcześniej wymagało dokładnie 200 — Radarr/Sonarr zwracają inne kody)
+    - pick(): auto-recovery backendu po fail_timeout sekundach bez health check
+    - release(): sukces zeruje licznik błędów i przywraca stan Healthy
+    - release(): pusta odpowiedź HTTP nie wywołuje mark_fail() — tylko błędy TCP
+  * Bugfix: zakładka Upstreams nie wyświetlała upstreamów z konfiga
+    - Przyczyna: loadUpstreams() wstawiało dane do upstream-pool-table
+      (element w dashboardzie) zamiast upstream-table (strona Upstreams)
+    - Fix: obsługa obu elementów jednocześnie — pełna tabela z nagłówkami
+      na stronie Upstreams, same wiersze w widżecie dashboardu
+  * Poprawka: panel bazy danych — brak kafelka dla tabeli whitelist
+    - TABLE_DESC w loadDb() uzupełniony o whitelist {icon:'✅', ...}
+
+ -- NAS Panel Team <admin@localhost>  Sat, 11 Apr 2026 18:00:00 +0200
+
 nas-web (2.3.1-1) stable; urgency=high
+
 
   * Bugfix: uv_close assertion crash (ABRT) przy wysokim ruchu
     - close_conn() pomijane w dispatch() dla blacklist/autoban — idle_timer

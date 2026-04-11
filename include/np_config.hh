@@ -52,10 +52,10 @@ struct UpstreamConfig {
     std::string                  name;
     std::vector<UpstreamServer>  servers;
     int   keepalive{32};
-    bool  hc_enabled{true};
+    bool  hc_enabled{false};  // opt-in: enable with health_check /path in upstream block
     int   hc_interval{5};
     std::string hc_path{"/health"};
-    int   hc_expected_status{200};  // 200-399 = ok by default
+    int   hc_expected_status{0};  // 0 = accept any 2xx/3xx; set explicit code to require exact match
     LBStrategy strategy{LBStrategy::LeastConn};
     bool  sticky_sessions{false};   // hash client IP → same backend
 };
@@ -147,6 +147,12 @@ struct ServerConfig {
     int   send_timeout{60};
     int   read_timeout{30};
 
+    // ── Security overrides ────────────────────────────────────────────────────
+    // waf disabled — disables AutoBan + WAF regex + ModSecurity for this vhost.
+    // Use for trusted internal subdomains (e.g. radarr.nasserver.pl).
+    // Syntax in server {}: waf disabled;
+    bool  waf_disabled{false};
+
     std::string access_log{"/var/log/nodeproxy/access.log"};
     std::string error_log{"/var/log/nodeproxy/error.log"};
     std::unordered_map<int,std::string> error_pages;  // status → file/url
@@ -219,6 +225,12 @@ struct Config {
     bool        waf_regex_enabled{true};   // active by default, no dependencies
     bool        waf_regex_block{true};     // false = detect-only
     bool        waf_regex_check_body{true};
+
+    // ── IP Whitelist ──────────────────────────────────────────────────────────
+    // IPs/prefixes that are NEVER blocked by blacklist, autoban or WAF.
+    // Supports exact IPs and prefix notation (e.g. "192.168.1." matches subnet).
+    // Syntax: whitelist 192.168.1.10 10.0.0. 203.0.113.5;
+    std::vector<std::string> whitelist;
 
     std::vector<UpstreamConfig>  upstreams;
     std::vector<ServerConfig>    servers;

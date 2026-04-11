@@ -72,6 +72,11 @@ struct NasDb {
                 reason TEXT    NOT NULL,
                 detail TEXT    NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS whitelist (
+                ip   TEXT PRIMARY KEY NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                ts   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
             CREATE INDEX IF NOT EXISTS idx_ban_ts ON ban_events(ts DESC);
             CREATE INDEX IF NOT EXISTS idx_ban_ip ON ban_events(ip);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_ban_unique
@@ -150,6 +155,49 @@ struct NasDb {
             n = (size_t)sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
         return n;
+    }
+
+    // ── Whitelist ─────────────────────────────────────────────────────────────
+    // Stores trusted IPs/prefixes that bypass blacklist, autoban and WAF.
+    bool whitelist_add(const std::string& ip, const std::string& note = "") {
+        std::lock_guard<std::mutex> lk(mu_);
+        if(!db_) return false;
+        const char* sql = "INSERT OR REPLACE INTO whitelist(ip,note) VALUES(?,?)";
+        sqlite3_stmt* st = prepare(sql);
+        if(!st) return false;
+        sqlite3_bind_text(st, 1, ip.c_str(),   -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 2, note.c_str(), -1, SQLITE_STATIC);
+        bool ok = (sqlite3_step(st) == SQLITE_DONE);
+        sqlite3_finalize(st);
+        return ok;
+    }
+
+    bool whitelist_remove(const std::string& ip) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if(!db_) return false;
+        const char* sql = "DELETE FROM whitelist WHERE ip = ?";
+        sqlite3_stmt* st = prepare(sql);
+        if(!st) return false;
+        sqlite3_bind_text(st, 1, ip.c_str(), -1, SQLITE_STATIC);
+        bool ok = (sqlite3_step(st) == SQLITE_DONE);
+        sqlite3_finalize(st);
+        return ok;
+    }
+
+    // Returns all whitelist entries as vector of {ip, note} pairs
+    std::vector<std::pair<std::string,std::string>> whitelist_load() {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::vector<std::pair<std::string,std::string>> result;
+        if(!db_) return result;
+        sqlite3_stmt* st = prepare("SELECT ip, note FROM whitelist ORDER BY ts ASC");
+        if(!st) return result;
+        while(sqlite3_step(st) == SQLITE_ROW) {
+            const char* ip   = (const char*)sqlite3_column_text(st, 0);
+            const char* note = (const char*)sqlite3_column_text(st, 1);
+            result.push_back({ ip ? ip : "", note ? note : "" });
+        }
+        sqlite3_finalize(st);
+        return result;
     }
 
     // ── Ban events ────────────────────────────────────────────────────────────
@@ -386,6 +434,9 @@ struct NasDb {
     bool blacklist_contains(const std::string&) { return false; }
     std::unordered_set<std::string> blacklist_load() { return {}; }
     size_t blacklist_count() { return 0; }
+    bool whitelist_add(const std::string&, const std::string& = "") { return false; }
+    bool whitelist_remove(const std::string&) { return false; }
+    std::vector<std::pair<std::string,std::string>> whitelist_load() { return {}; }
     struct DbBanEvent {};
     bool ban_insert(const DbBanEvent&) { return false; }
     std::vector<DbBanEvent> ban_load_recent(int = 200) { return {}; }

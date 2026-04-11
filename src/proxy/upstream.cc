@@ -70,9 +70,22 @@ public:
         if(ok){
             stats.latency_sum_ms.fetch_add((uint64_t)latency_ms);
             stats.last_ok_ms = now_ms();
+            stats.fails.store(0);  // reset fail counter on success
+            if(state.load() != UpState::Healthy)
+                state.store(UpState::Healthy);
+            // Przywróć non-blocking i wyczyść timeouty
+            if(c->fd >= 0) {
+                int fl = fcntl(c->fd, F_GETFL, 0);
+                fcntl(c->fd, F_SETFL, fl | O_NONBLOCK);
+                struct timeval zero{0,0};
+                setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof(zero));
+                setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO, &zero, sizeof(zero));
+            }
         } else {
             stats.req_err++;
-            mark_fail();
+            // Note: mark_fail() is called by the caller (server.cc) only on
+            // TCP-level errors (connect/write fail). Empty responses from
+            // app-level errors (404, 500) do NOT count as backend failures.
         }
         if(!ok||c->requests>2000||c->fd<0){
             if(c->fd>=0){close(c->fd);c->fd=-1;}
@@ -152,10 +165,22 @@ public:
 
     // Pick backend using configured strategy
     UpstreamPool* pick(const std::string& client_ip = ""){
-        // Collect healthy pools (and backup if all down)
+        // Collect healthy/degraded pools; auto-recover Down pools after fail_timeout
         std::vector<UpstreamPool*> alive, backup;
+        int64_t now = now_ms();
         for(auto& p:pools_){
-            if(p->state.load() == UpState::Down) continue;
+            if(p->state.load() == UpState::Down){
+                // Auto-recover after fail_timeout — even without health check running
+                int64_t elapsed_ms = now - p->stats.last_fail_ms;
+                if(elapsed_ms >= (int64_t)p->cfg.fail_timeout * 1000){
+                    p->stats.fails.store(0);
+                    p->state.store(UpState::Healthy);
+                    NW_INFO("upstream","Backend %s:%d auto-recovered after %llds",
+                            p->cfg.host.c_str(), p->cfg.port, (long long)(elapsed_ms/1000));
+                } else {
+                    continue; // still in timeout window
+                }
+            }
             if(p->cfg.backup) backup.push_back(p.get());
             else alive.push_back(p.get());
         }
@@ -276,7 +301,10 @@ private:
                 if(n > 0){
                     int status = 0;
                     sscanf(resp,"HTTP/%*s %d",&status);
-                    ok = (expected > 0) ? (status == expected) : (status >= 200 && status < 400);
+                    if(expected > 0)
+                        ok = (status == expected);        // exact match required
+                    else
+                        ok = (status >= 200 && status < 400); // accept any 2xx/3xx
                 }
             }
         }

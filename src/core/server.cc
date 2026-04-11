@@ -91,6 +91,24 @@ static int         g_wstats_count{0}; // set during startup
 static std::mutex                         g_blacklist_mu;
 static std::unordered_set<std::string>    g_blacklist;
 
+// ── IP Whitelist — IPs/prefixes that bypass blacklist + all WAF/autoban ───────
+static std::mutex                         g_whitelist_mu;
+static std::vector<std::string>           g_whitelist;   // exact IPs or prefix strings
+
+// Returns true if client_ip matches any whitelist entry (exact or prefix)
+static bool is_whitelisted(const std::string& ip) {
+    std::lock_guard<std::mutex> lk(g_whitelist_mu);
+    for(auto& entry : g_whitelist) {
+        if(entry.empty()) continue;
+        // Exact match
+        if(ip == entry) return true;
+        // Prefix match (e.g. "192.168.1." matches "192.168.1.42")
+        if(ip.size() > entry.size() && ip.substr(0, entry.size()) == entry)
+            return true;
+    }
+    return false;
+}
+
 // ── Admin brute-force protection ──────────────────────────────────────────────
 struct AdminFailTracker {
     struct Entry { int count{0}; time_t first{0}; time_t locked_until{0}; };
@@ -166,6 +184,15 @@ static void blacklist_load(){
     g_blacklist.insert(ips.begin(), ips.end());
     NW_INFO("server", "Loaded %zu blacklisted IPs from SQLite",
             g_blacklist.size());
+}
+
+static void whitelist_load_db() {
+    if(!g_db.is_open()) return;
+    auto entries = g_db.whitelist_load();
+    std::lock_guard<std::mutex> lk(g_whitelist_mu);
+    for(auto& [ip, note] : entries)
+        if(!ip.empty()) g_whitelist.push_back(ip);
+    NW_INFO("server", "Loaded %zu whitelisted IPs from SQLite", entries.size());
 }
 
 // ── Per-IP connection counter ─────────────────────────────────────────────
@@ -286,7 +313,10 @@ struct Worker {
     std::unique_ptr<ResponseCache>      cache;
     std::unique_ptr<RateLimiter>        rl;
     std::unique_ptr<MiddlewarePipeline> mw;
-    std::unique_ptr<UpstreamGroup>      upstream;
+    /* upstream_map: nazwa -> UpstreamGroup
+       Jeden wpis per blok upstream{} z configa +
+       auto-created inline dla proxy_pass host:port bez named upstream */
+    std::unordered_map<std::string, std::unique_ptr<UpstreamGroup>> upstream_map;
 
     uint64_t stat_req{}, stat_err{}, stat_cache_hit{};
 };
@@ -858,6 +888,7 @@ static void dispatch(Conn* conn) {
                rpath == "/np_waf" ||
                rpath == "/np_waf_regex" ||
                rpath == "/np_db" ||
+               rpath == "/np_whitelist" ||
                rpath == "/np_csrf";
     };
 
@@ -1254,8 +1285,28 @@ static void dispatch(Conn* conn) {
                     g_db.blacklist_remove(ip);
                     NW_INFO("blacklist","Removed: %s",ip.c_str());
                 }
-                } // lock released before audit
+                } // lock released before audit + kick
                 if(action=="add") audit(conn->client_ip, "blacklist_add", ip);
+                if(action=="remove") {
+                    audit(conn->client_ip, "blacklist_remove", ip);
+                    // ── Kick lingering keep-alive connections from this IP ──────
+                    // Without this, banned connections that are already open would
+                    // survive until their keep-alive timeout even after unban.
+                    // We also need to kick connections that are stuck in blocked
+                    // state — after erase from g_blacklist they'll be allowed on
+                    // the next request, but persistent connections won't reconnect.
+                    std::vector<Conn*> to_kick;
+                    {
+                        std::lock_guard<std::mutex> lk2(g_active_mu);
+                        for(auto& [ptr, ac] : g_active)
+                            if(ac.ip == ip)
+                                to_kick.push_back(static_cast<Conn*>(ptr));
+                    }
+                    for(auto* kc : to_kick) {
+                        NW_INFO("blacklist","Kicking open connection from unbanned IP: %s", ip.c_str());
+                        close_conn(kc);
+                    }
+                }
             }
             // rebuild JSON list
             std::lock_guard<std::mutex> lk(g_blacklist_mu);
@@ -1269,6 +1320,82 @@ static void dispatch(Conn* conn) {
             result = "{\"count\":" + std::to_string(g_blacklist.size()) + ",\"ips\":[";
             bool first=true;
             for(auto& bip : g_blacklist){ if(!first)result+=","; result+="\""+bip+"\""; first=false; }
+            result += "]}";
+        }
+        Response r; r.status=200;
+        r.headers.set("Content-Type","application/json");
+        r.headers.set("Content-Length",std::to_string(result.size()));
+        r.headers.set("Cache-Control","no-store");
+        r.body=result;
+        write_response(conn, r.serialize_h1()); return;
+    }
+
+    // ── /np_whitelist — manage IP whitelist (bypass all security) ─────────────
+    if(rpath == "/np_whitelist") {
+        std::string result;
+        if(conn->req.method == Method::POST) {
+            auto& body = conn->req.body;
+            auto jstr=[&](const char* k)->std::string{
+                std::string key=std::string("\"")+ k+"\":\""; auto p=body.find(key);
+                if(p==std::string::npos)return"";
+                auto e=body.find('"',p+key.size()); return e==std::string::npos?"":body.substr(p+key.size(),e-p-key.size());
+            };
+            std::string action=jstr("action"), ip=jstr("ip"), note=jstr("note");
+            if(!ip.empty()) {
+                if(action=="add") {
+                    {
+                        std::lock_guard<std::mutex> lk(g_whitelist_mu);
+                        if(std::find(g_whitelist.begin(), g_whitelist.end(), ip) == g_whitelist.end())
+                            g_whitelist.push_back(ip);
+                    }
+                    g_db.whitelist_add(ip, note);
+                    // If IP was also blacklisted, auto-remove it
+                    {
+                        std::lock_guard<std::mutex> lk(g_blacklist_mu);
+                        g_blacklist.erase(ip);
+                    }
+                    g_db.blacklist_remove(ip);
+                    audit(conn->client_ip, "whitelist_add", ip + (note.empty() ? "" : " (" + note + ")"));
+                    NW_INFO("whitelist","Added: %s (%s)", ip.c_str(), note.c_str());
+                } else if(action=="remove") {
+                    {
+                        std::lock_guard<std::mutex> lk(g_whitelist_mu);
+                        g_whitelist.erase(std::remove(g_whitelist.begin(), g_whitelist.end(), ip),
+                                          g_whitelist.end());
+                    }
+                    g_db.whitelist_remove(ip);
+                    audit(conn->client_ip, "whitelist_remove", ip);
+                    NW_INFO("whitelist","Removed: %s", ip.c_str());
+                }
+            }
+            // rebuild JSON list
+            std::lock_guard<std::mutex> lk(g_whitelist_mu);
+            result = "{\"ok\":true,\"count\":" + std::to_string(g_whitelist.size()) + ",\"entries\":[";
+            bool first=true;
+            for(auto& wip : g_whitelist){
+                if(!first) result+=",";
+                first=false;
+                result+="{\"ip\":\""+wip+"\"}";
+            }
+            result += "]}";
+        } else {
+            // GET — return current whitelist with DB notes
+            auto db_entries = g_db.whitelist_load();
+            // Build ip→note map from DB
+            std::unordered_map<std::string,std::string> notes;
+            for(auto& [ip, note] : db_entries) notes[ip] = note;
+            std::lock_guard<std::mutex> lk(g_whitelist_mu);
+            result = "{\"count\":" + std::to_string(g_whitelist.size()) + ",\"entries\":[";
+            bool first=true;
+            for(auto& wip : g_whitelist){
+                if(!first) result+=",";
+                first=false;
+                auto it = notes.find(wip);
+                std::string note = (it != notes.end()) ? it->second : "";
+                // escape note
+                std::string en; for(char c:note){if(c=='"')en+="\\\"";else if(c=='\\')en+="\\\\";else en+=c;}
+                result+="{\"ip\":\""+wip+"\",\"note\":\""+en+"\"}";
+            }
             result += "]}";
         }
         Response r; r.status=200;
@@ -2117,8 +2244,11 @@ static void dispatch(Conn* conn) {
 
     } // end is_admin_path
 
+    // ── IP Whitelist bypass — sprawdź przed blacklistą i WAF ─────────────────
+    const bool client_whitelisted = is_whitelisted(conn->client_ip);
+
     // ── IP Blacklist check ────────────────────────────────────────────────────
-    {
+    if(!client_whitelisted) {
         std::lock_guard<std::mutex> lk(g_blacklist_mu);
         if(g_blacklist.count(conn->client_ip)) {
             NW_DEBUG("blacklist", "Blocked IP: %s", conn->client_ip.c_str());
@@ -2128,8 +2258,11 @@ static void dispatch(Conn* conn) {
         }
     }
 
+    // ── waf_disabled per-vhost flag ───────────────────────────────────────────
+    const bool skip_waf = srv.waf_disabled || client_whitelisted;
+
     // ── AutoBan pre-request check (ZAWSZE przed WAF — zlicza scan_hits) ───────
-    {
+    if(!skip_waf) {
         auto ua  = std::string(conn->req.headers.get("User-Agent"));
         auto verdict = g_autoban.check(conn->client_ip, conn->req.path, ua, 0);
         if(verdict == AutoBan::Verdict::Ban) {
@@ -2144,7 +2277,7 @@ static void dispatch(Conn* conn) {
     }
 
     // ── Built-in regex WAF check (PRZED match_location — blokuje też 404-bound scans) ──
-    if(g_waf_regex.cfg.enabled && g_waf_regex.compiled){
+    if(!skip_waf && g_waf_regex.cfg.enabled && g_waf_regex.compiled){
         std::string waf_cat, waf_detail;
         std::string raw_hdrs;
         for(auto& h : conn->req.headers.items)
@@ -2167,7 +2300,7 @@ static void dispatch(Conn* conn) {
 
 #ifdef WITH_MODSEC
     // ── ModSecurity WAF check (po parse HTTP, przed match_location) ───────────
-    if(g_waf.cfg.enabled && g_waf.loaded){
+    if(!skip_waf && g_waf.cfg.enabled && g_waf.loaded){
         std::string hdr_str;
         for(auto& h : conn->req.headers.items)
             hdr_str += std::string(h.first) + ": " + std::string(h.second) + "\r\n";
@@ -2314,10 +2447,23 @@ static void dispatch(Conn* conn) {
     }
 
     // ── Proxy ─────────────────────────────────────────────────────────────────
-    if(!w->upstream) {
-        { bool a=conn->req.path.substr(0,4)=="/api"; write_response(conn,(a?Response::make_json_error(503,"No upstream"):Response::make_error(503,"No upstream")).serialize_h1()); return; }
-    }
-    UpstreamPool* up = w->upstream->pick(conn->client_ip);
+    {
+        // Szukaj upstream po nazwie z location (named lub inline host:port)
+        UpstreamGroup* ug = nullptr;
+        auto it = w->upstream_map.find(loc->upstream);
+        if(it != w->upstream_map.end()) {
+            ug = it->second.get();
+        } else if(!w->upstream_map.empty()) {
+            // fallback: pierwszy dostępny (kompatybilność wsteczna)
+            ug = w->upstream_map.begin()->second.get();
+        }
+        if(!ug) {
+            bool api2 = conn->req.path.substr(0,4) == "/api";
+            write_response(conn, (api2 ? Response::make_json_error(503,"No upstream")
+                                       : Response::make_error(503,"No upstream")).serialize_h1());
+            return;
+        }
+    UpstreamPool* up = ug->pick(conn->client_ip);
     if(!up) {
         { NW_WARN("proxy", "All upstreams down for %.*s", (int)conn->req.path.size(), conn->req.path.data()); bool a=conn->req.path.substr(0,4)=="/api"; write_response(conn,(a?Response::make_json_error(502,"All upstreams down"):Response::make_error(502,"All upstreams down")).serialize_h1()); w->stat_err++; return; }
     }
@@ -2333,23 +2479,35 @@ static void dispatch(Conn* conn) {
     conn->req.headers.set("X-Real-IP",         conn->client_ip);
     conn->req.headers.set("X-Forwarded-Proto", conn->req.scheme);
     conn->req.headers.remove("Connection");
+    // Dla WebSocket zostawiamy Upgrade, dla zwykłego HTTP wymuszamy close
     conn->req.headers.set("Connection", conn->is_ws ? "Upgrade" : "close");
     for(auto&[k,v] : loc->add_headers)  conn->req.headers.set(k,v);
     for(auto& h    : loc->hide_headers) conn->req.headers.remove(h);
 
     // Serialise forwarded request
+    // Używamy HTTP/1.0 dla zwykłego proxy — backend musi zamknąć połączenie
+    // po odpowiedzi, co kończy pętlę read() w threadpoolu.
+    // HTTP/1.1 z keep-alive powoduje że read() czeka w nieskończoność.
+    const char* http_ver = conn->is_ws ? "HTTP/1.1" : "HTTP/1.0";
     std::string fwd;
     fwd.reserve(1024 + conn->req.body.size());
     fwd += method_str(conn->req.method);
     fwd += ' '; fwd += conn->req.path;
     if(!conn->req.query.empty()) { fwd += '?'; fwd += conn->req.query; }
-    fwd += " HTTP/1.1\r\n";
+    fwd += ' '; fwd += http_ver; fwd += "\r\n";
     for(auto&[k,v] : conn->req.headers.items) { fwd+=k; fwd+=": "; fwd+=v; fwd+="\r\n"; }
     fwd += "\r\n";
     if(!conn->req.body.empty()) fwd += conn->req.body;
 
-    // Set blocking before send+recv
+    // Przełącz na blocking przed write+read
     { int fl = fcntl(upc->fd, F_GETFL, 0); fcntl(upc->fd, F_SETFL, fl & ~O_NONBLOCK); }
+    // Timeout odczytu: proxy_timeout z location lub domyślnie 30s
+    {
+        int tmo = loc->proxy_timeout > 0 ? loc->proxy_timeout : 30;
+        struct timeval tv{ tmo, 0 };
+        setsockopt(upc->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(upc->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
 
     ssize_t sent = write(upc->fd, fwd.data(), fwd.size());
     if(sent < 0) {
@@ -2408,7 +2566,9 @@ static void dispatch(Conn* conn) {
 
             Worker* w2 = c->worker;
             if(w2 && w2->config && !w2->config->servers.empty()) {
-                const auto& srv2 = w2->config->servers[0];
+                // Użyj serwera dopasowanego do Host requestu, nie zawsze servers[0]
+                const ServerConfig* srv2_ptr = w2->config->match_server(std::string(c->req.host));
+                const ServerConfig& srv2 = srv2_ptr ? *srv2_ptr : w2->config->servers[0];
                 auto* loc2 = w2->config->match_location(srv2, c->req.path);
                 if(loc2 && w2->mw && !loc2->middlewares.empty())
                     w2->mw->run_response(loc2->middlewares, c->req, resp);
@@ -2429,6 +2589,7 @@ static void dispatch(Conn* conn) {
             if(w2){ w2->stat_req++; g_stat_req.fetch_add(1,std::memory_order_relaxed); if(w2->id<64)g_wstats[w2->id].req.fetch_add(1,std::memory_order_relaxed); }
         }
     );
+    } // end upstream_map lookup block
 }
 
 // ── on_alloc / on_read ────────────────────────────────────────────────────────
@@ -2860,6 +3021,18 @@ int main(int argc, char** argv) {
     }
     blacklist_load();
     bans_load();
+    whitelist_load_db();
+    // Also seed whitelist from static config entries
+    if(g_config && !g_config->whitelist.empty()) {
+        std::lock_guard<std::mutex> lk(g_whitelist_mu);
+        for(auto& entry : g_config->whitelist) {
+            // Avoid duplicates already loaded from DB
+            if(std::find(g_whitelist.begin(), g_whitelist.end(), entry) == g_whitelist.end())
+                g_whitelist.push_back(entry);
+        }
+        NW_INFO("whitelist", "Loaded %zu static whitelist entries from config",
+                g_config->whitelist.size());
+    }
 
     // ── Stats history collector ─────────────────────────────────────────────
     g_stats_timer_running.store(true);
@@ -2935,8 +3108,34 @@ int main(int argc, char** argv) {
         w->config = g_config;
 
         // Init subsystems in main thread (single-threaded, safe)
-        if(!g_config->upstreams.empty())
-            w->upstream = std::make_unique<UpstreamGroup>(g_config->upstreams[0]);
+        // Buduj mapę upstreamów: named upstream{} + inline proxy_pass host:port
+        // Helper lambda: dodaje UpstreamConfig do mapy jeśli jeszcze nie ma
+        auto ensure_upstream = [&](const std::string& name, const UpstreamConfig& ucfg) {
+            if(w->upstream_map.find(name) == w->upstream_map.end())
+                w->upstream_map[name] = std::make_unique<UpstreamGroup>(ucfg);
+        };
+        // 1. Named upstream{} bloki z configa
+        for(auto& up : g_config->upstreams)
+            ensure_upstream(up.name, up);
+        // 2. Inline proxy_pass "host:port" w każdej lokacji (auto-upstream)
+        for(auto& srv : g_config->servers)
+            for(auto& loc : srv.locations)
+                if(loc.type == LocationType::Proxy && !loc.upstream.empty()) {
+                    // Jeśli nie ma named upstream o tej nazwie → parsuj jako host:port
+                    if(w->upstream_map.find(loc.upstream) == w->upstream_map.end()) {
+                        auto col = loc.upstream.rfind(':');
+                        if(col != std::string::npos) {
+                            UpstreamConfig uc;
+                            uc.name = loc.upstream;
+                            UpstreamServer us;
+                            us.host = loc.upstream.substr(0, col);
+                            us.port = (uint16_t)std::stoi(loc.upstream.substr(col+1));
+                            us.weight = 1; us.max_fails = 3; us.fail_timeout = 30;
+                            uc.servers.push_back(us);
+                            ensure_upstream(loc.upstream, uc);
+                        }
+                    }
+                }
         w->cache = std::make_unique<ResponseCache>(g_config->cache_size, g_config->cache_ttl);
 
         // Rate limiter config
@@ -3005,12 +3204,30 @@ int main(int argc, char** argv) {
                 // Each worker checks w->config at dispatch time (shared_ptr, thread-safe read)
                 // Active requests finish with the old config naturally
                 for(auto& w : workers) {
-                    // Build new upstream/cache for new config if needed
-                    if(!new_cfg->upstreams.empty()) {
-                        auto new_up = std::make_unique<UpstreamGroup>(new_cfg->upstreams[0]);
-                        // Workers will pick up new upstream on next request
-                        // We swap via a lock-free shared_ptr exchange
-                    }
+                    // Buduj nową mapę upstreamów (named + inline)
+                    std::unordered_map<std::string, std::unique_ptr<UpstreamGroup>> new_map;
+                    auto ensure_up = [&](const std::string& name, const UpstreamConfig& uc) {
+                        if(new_map.find(name) == new_map.end())
+                            new_map[name] = std::make_unique<UpstreamGroup>(uc);
+                    };
+                    for(auto& up : new_cfg->upstreams)
+                        ensure_up(up.name, up);
+                    for(auto& srv : new_cfg->servers)
+                        for(auto& loc : srv.locations)
+                            if(loc.type == LocationType::Proxy && !loc.upstream.empty())
+                                if(new_map.find(loc.upstream) == new_map.end()) {
+                                    auto col = loc.upstream.rfind(':');
+                                    if(col != std::string::npos) {
+                                        UpstreamConfig uc; uc.name = loc.upstream;
+                                        UpstreamServer us;
+                                        us.host = loc.upstream.substr(0, col);
+                                        us.port = (uint16_t)std::stoi(loc.upstream.substr(col+1));
+                                        us.weight = 1; us.max_fails = 3; us.fail_timeout = 30;
+                                        uc.servers.push_back(us);
+                                        ensure_up(loc.upstream, uc);
+                                    }
+                                }
+                    w->upstream_map = std::move(new_map);
                     // Atomic config swap — safe because shared_ptr is atomic-capable
                     std::atomic_store(&w->config, new_cfg);
                     // Swap middleware pipeline (needs new config)

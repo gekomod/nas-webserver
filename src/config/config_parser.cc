@@ -172,6 +172,7 @@ static ServerConfig parse_server(P& p){
         else if(key=="location"){srv.locations.push_back(parse_location(p));continue;}
         else if(key=="error_page"){int code=pi(p.word(),404);std::string pg=p.word();srv.error_pages[code]=pg;}
         else if(key=="default_server"){for(auto& l:srv.listens)l.default_server=true;}
+        else if(key=="waf"){auto v=p.word(); srv.waf_disabled=(v=="disabled"||v=="off"||v=="false");}
         else{while(p.at(Token::Word))p.eat();}
         if(p.at(Token::Semi)) p.eat();
     }
@@ -266,6 +267,7 @@ std::shared_ptr<Config> parse_config(const std::string& path){
         else if(key=="blacklist_file")      {cfg->blacklist_file=p.word();}
         else if(key=="waf_regex_check_body") {cfg->waf_regex_check_body =pb(p.word());}
         else if(key=="admin_tls_only") { cfg->admin_tls_only = pb(p.word()); }
+        else if(key=="whitelist")      { while(p.at(Token::Word)) cfg->whitelist.push_back(p.eat().val); }
         // ACME config block
         else if(key=="acme"){
             p.expect(Token::LBrace);

@@ -119,7 +119,38 @@ std::pair<ParseResult,size_t> parse_response(const char* buf,size_t len,Response
         resp.headers.set(std::move(k),std::string(val));
     }
     size_t body_start=hend+4;
-    if(!chunked&&clen>0){
+    if(chunked){
+        // Dekoduj Transfer-Encoding: chunked
+        // Format: hex_size\r\ndata\r\n ... 0\r\n\r\n
+        std::string decoded;
+        decoded.reserve(len - body_start);
+        size_t pos2 = body_start;
+        while(pos2 < len) {
+            // Szukaj końca linii z rozmiarem chunka
+            size_t nl = sv.find("\r\n", pos2);
+            if(nl == std::string_view::npos) break;
+            // Parsuj hex rozmiar (ignoruj chunk extensions po ';')
+            std::string hex_str{sv.substr(pos2, nl - pos2)};
+            auto semi = hex_str.find(';');
+            if(semi != std::string::npos) hex_str = hex_str.substr(0, semi);
+            // Trim whitespace
+            while(!hex_str.empty() && (hex_str.back()==' '||hex_str.back()=='\r')) hex_str.pop_back();
+            if(hex_str.empty()) { pos2 = nl + 2; continue; }
+            size_t chunk_size = 0;
+            try { chunk_size = std::stoul(hex_str, nullptr, 16); }
+            catch(...) { break; }
+            if(chunk_size == 0) break; // ostatni chunk
+            pos2 = nl + 2;
+            if(pos2 + chunk_size > len) break; // niepełne dane
+            decoded.append(buf + pos2, chunk_size);
+            pos2 += chunk_size + 2; // +2 za \r\n po danych chunka
+        }
+        resp.body = std::move(decoded);
+        // Zaktualizuj Content-Length na zdekodowany rozmiar
+        resp.headers.set("Content-Length", std::to_string(resp.body.size()));
+        return {ParseResult::Complete, len};
+    }
+    if(clen>0){
         if(len-body_start<clen) return {ParseResult::Incomplete,0};
         resp.body.assign(buf+body_start,clen);
         return {ParseResult::Complete,body_start+clen};
